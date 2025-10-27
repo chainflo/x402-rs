@@ -56,6 +56,7 @@ telemetry = []
 members = [
   "crates/x402-axum",
   "examples/x402-axum-example",
+  "examples/x402-axum-quote-example",
   "crates/x402-reqwest",
   "examples/x402-reqwest-example",
   "."

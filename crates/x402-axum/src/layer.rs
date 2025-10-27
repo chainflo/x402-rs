@@ -222,6 +222,67 @@ where
         this.recompute_offers()
     }
 
+    /// Enables dynamic, per-request computation of payment requirements via a resolver.
+    ///
+    /// The resolver receives request headers and URI together with a base URL and the
+    /// partial requirements (without `resource`) derived from configured price tags.
+    /// It must return a full list of [`PaymentRequirements`] to be used for this request.
+    ///
+    /// This is suitable for dynamic pricing flows where the exact amount depends on
+    /// request content, user context, or other runtime factors.
+    #[allow(dead_code)] // Public for consumption by downstream crates.
+    pub fn with_requirements_resolver<R>(&self, resolver: R) -> Self
+    where
+        R: for<'a> Fn(
+                &'a HeaderMap,
+                &'a Uri,
+                &'a Url,
+                &'a [PaymentRequirementsNoResource],
+            )
+            -> Pin<Box<dyn Future<Output = Result<Vec<PaymentRequirements>, X402Error>> + Send + 'a>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let mut this = self.clone();
+        let base_url = this.base_url();
+        let description = this.description.clone().unwrap_or_default();
+        let mime_type = this
+            .mime_type
+            .clone()
+            .unwrap_or("application/json".to_string());
+        let max_timeout_seconds = this.max_timeout_seconds;
+        let partial = this
+            .price_tag
+            .iter()
+            .map(|price_tag| {
+                let extra = if let Some(eip712) = price_tag.token.eip712.clone() {
+                    Some(json!({ "name": eip712.name, "version": eip712.version }))
+                } else {
+                    None
+                };
+                PaymentRequirementsNoResource {
+                    scheme: Scheme::Exact,
+                    network: price_tag.token.network(),
+                    max_amount_required: price_tag.amount,
+                    description: description.clone(),
+                    mime_type: mime_type.clone(),
+                    pay_to: price_tag.pay_to.clone(),
+                    max_timeout_seconds,
+                    asset: price_tag.token.address(),
+                    extra,
+                    output_schema: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        this.payment_offers = Arc::new(PaymentOffers::Resolver {
+            partial,
+            base_url,
+            resolver: PaymentRequirementsResolverFn::new(resolver),
+        });
+        this
+    }
+
     fn recompute_offers(mut self) -> Self {
         let base_url = self.base_url();
         let description = self.description.clone().unwrap_or_default();
@@ -351,14 +412,17 @@ where
 
     /// Intercepts the request, injects payment enforcement logic, and forwards to the wrapped service.
     fn call(&mut self, req: Request) -> Self::Future {
-        let payment_requirements =
-            gather_payment_requirements(self.payment_offers.as_ref(), req.uri());
-        let gate = X402Paygate {
-            facilitator: self.facilitator.clone(),
-            payment_requirements,
-        };
+        let offers = self.payment_offers.clone();
+        let facilitator = self.facilitator.clone();
         let inner = self.inner.clone();
-        Box::pin(gate.call(inner, req))
+        Box::pin(async move {
+            let payment_requirements = gather_payment_requirements(offers.as_ref(), req.uri(), req.headers()).await;
+            let gate = X402Paygate {
+                facilitator,
+                payment_requirements,
+            };
+            gate.call(inner, req).await
+        })
     }
 }
 
@@ -732,6 +796,12 @@ pub enum PaymentOffers {
         partial: Vec<PaymentRequirementsNoResource>,
         base_url: Url,
     },
+    /// Dynamically resolved requirements per request using a user-provided resolver.
+    Resolver {
+        partial: Vec<PaymentRequirementsNoResource>,
+        base_url: Url,
+        resolver: PaymentRequirementsResolverFn,
+    },
 }
 
 /// Constructs a full list of [`PaymentRequirements`] for a request.
@@ -743,18 +813,22 @@ pub enum PaymentOffers {
 /// - If `payment_offers` is [`PaymentOffers::NoResource`], it dynamically constructs the `resource` URI
 ///   by combining the `base_url` with the request's path and query, and completes each
 ///   partial `PaymentRequirementsNoResource` into a full `PaymentRequirements`.
+/// - If `payment_offers` is [`PaymentOffers::Resolver`], it calls the resolver function to compute
+///   dynamic requirements based on request context.
 ///
 /// # Arguments
 ///
 /// * `payment_offers` - The current payment offer configuration, either precomputed or partial.
 /// * `req_uri` - The incoming request URI used to construct the full resource path if needed.
+/// * `req_headers` - The incoming request headers passed to the resolver if needed.
 ///
 /// # Returns
 ///
 /// An `Arc<Vec<PaymentRequirements>>` ready to be passed to a facilitator for verification.
-fn gather_payment_requirements(
+async fn gather_payment_requirements(
     payment_offers: &PaymentOffers,
     req_uri: &Uri,
+    req_headers: &HeaderMap,
 ) -> Arc<Vec<PaymentRequirements>> {
     match payment_offers {
         PaymentOffers::Ready(requirements) => {
@@ -774,5 +848,85 @@ fn gather_payment_requirements(
                 .collect::<Vec<_>>();
             Arc::new(payment_requirements)
         }
+        PaymentOffers::Resolver { partial, base_url, resolver } => {
+            // Call the resolver function to compute dynamic requirements
+            match resolver.resolve(req_headers, req_uri, base_url, partial).await {
+                Ok(list) => Arc::new(list),
+                Err(_) => {
+                    // If resolver fails, fall back to NoResource behavior
+                    let resource = {
+                        let mut resource_url = base_url.clone();
+                        resource_url.set_path(req_uri.path());
+                        resource_url.set_query(req_uri.query());
+                        resource_url
+                    };
+                    let payment_requirements = partial
+                        .iter()
+                        .map(|partial| partial.to_payment_requirements(resource.clone()))
+                        .collect::<Vec<_>>();
+                    Arc::new(payment_requirements)
+                }
+            }
+        }
+    }
+}
+
+/// A clonable wrapper for an async resolver function that computes per-request requirements.
+#[derive(Clone)]
+pub struct PaymentRequirementsResolverFn(
+    Arc<
+        dyn for<'a> Fn(
+                &'a HeaderMap,
+                &'a Uri,
+                &'a Url,
+                &'a [PaymentRequirementsNoResource],
+            )
+            -> Pin<
+                Box<dyn Future<Output = Result<Vec<PaymentRequirements>, X402Error>> + Send + 'a>,
+            > + Send
+            + Sync,
+    >,
+);
+
+impl Debug for PaymentRequirementsResolverFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PaymentRequirementsResolverFn(<function>)")
+    }
+}
+
+impl PartialEq for PaymentRequirementsResolverFn {
+    fn eq(&self, _other: &Self) -> bool {
+        // Function pointers can't be meaningfully compared for equality
+        false
+    }
+}
+
+impl Eq for PaymentRequirementsResolverFn {}
+
+impl PaymentRequirementsResolverFn {
+    pub fn new<R>(resolver: R) -> Self
+    where
+        R: for<'a> Fn(
+                &'a HeaderMap,
+                &'a Uri,
+                &'a Url,
+                &'a [PaymentRequirementsNoResource],
+            )
+            -> Pin<Box<dyn Future<Output = Result<Vec<PaymentRequirements>, X402Error>> + Send + 'a>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        PaymentRequirementsResolverFn(Arc::new(resolver))
+    }
+
+    pub async fn resolve(
+        &self,
+        headers: &HeaderMap,
+        uri: &Uri,
+        base_url: &Url,
+        partial: &[PaymentRequirementsNoResource],
+    ) -> Result<Vec<PaymentRequirements>, X402Error> {
+        (self.0)(headers, uri, base_url, partial).await
     }
 }

@@ -1,0 +1,20 @@
+[package]
+name = "x402-axum-quote-example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# Use local workspace crates to pick up the new resolver API
+x402-rs = { path = "../../" }
+x402-axum = { path = "../../crates/x402-axum" }
+
+axum = { version = "0.8.4" }
+tokio = { version = "1.45.0", features = ["macros", "rt-multi-thread", "sync"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.140" }
+uuid = { version = "1.11.0", features = ["v4"] }
+url = { version = "2.5.4" }
+http = { version = "1.3.1" }
+dotenvy = { version = "0.15.7" }
+

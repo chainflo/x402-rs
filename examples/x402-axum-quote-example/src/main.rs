@@ -3,37 +3,42 @@
 //! This example demonstrates an implementation of dynamic pricing using x402-axum.
 //!
 //! ## ⚠️  Production Security Considerations:
-//! 
+//!
 //! This example is simplified for demonstration. In production, you SHOULD take into account:
 //! - Proper quote authentication
 //! - Proper quote expiry
 //! - Proper only-once semantics for quotes
 
 use std::collections::HashMap;
-use std::sync::{Arc};
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::{Router, routing::{get, post}, extract::{State}, response::IntoResponse, Json};
+use axum::{
+    Json, Router,
+    extract::State,
+    response::IntoResponse,
+    routing::{get, post},
+};
 use dotenvy::dotenv;
-use std::env;
 use http::{HeaderMap, StatusCode, Uri};
 use serde::Deserialize;
+use std::env;
 use url::Url;
 use uuid::Uuid;
 
 use x402_axum::X402Middleware;
 use x402_axum::price::IntoPriceTag;
+use x402_rs::address_evm;
 use x402_rs::network::{Network, USDCDeployment};
 use x402_rs::types::{MoneyAmount, PaymentRequirements, Scheme};
-use x402_rs::address_evm;
 
 #[derive(Clone)]
 struct QuoteInfo {
     amount: String,
     client_id: String, // Client ID for identifying the client that requested the quote
-    expires_at: u64,      // Unix timestamp
-    used: bool,           // Track if quote has been used
+    expires_at: u64,   // Unix timestamp
+    used: bool,        // Track if quote has been used
 }
 
 #[derive(Clone, Default)]
@@ -48,7 +53,6 @@ struct QuoteRequest {
     number_of_files: u32,
 }
 
-
 async fn resolve_payment_requirements(
     headers: &HeaderMap,
     uri: &Uri,
@@ -56,10 +60,14 @@ async fn resolve_payment_requirements(
     partial: &[x402_axum::layer::PaymentRequirementsNoResource],
     state: AppState,
 ) -> Result<Vec<x402_rs::types::PaymentRequirements>, x402_axum::layer::X402Error> {
-    let quote_id = headers.get("X-Quote-Id").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let quote_id = headers
+        .get("X-Quote-Id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
     // In production, this should be a validated JWT or session token
     // otherwise clients can use quotes from other clients
-    let client_id = headers.get("X-Client-Id")
+    let client_id = headers
+        .get("X-Client-Id")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .unwrap_or_else(|| "unknown".to_string());
@@ -169,21 +177,25 @@ async fn main() {
         .pay_to(address_evm!("0xBAc675C310721717Cd4A37F6cbeA1F081b1C2a07"));
 
     // Base middleware with token/payee; amount will be determined by resolver per request
-    let facilitator_url = env::var("FACILITATOR_URL").unwrap_or_else(|_| "https://facilitator.x402.rs".to_string());
-    let x402 = X402Middleware::try_from(facilitator_url).unwrap()
+    let facilitator_url =
+        env::var("FACILITATOR_URL").unwrap_or_else(|_| "https://facilitator.x402.rs".to_string());
+    let x402 = X402Middleware::try_from(facilitator_url)
+        .unwrap()
         .with_base_url(Url::parse("https://localhost:3001/").unwrap())
         .with_mime_type("application/json")
         // seed a small nominal amount to form partial requirements (replaced by resolver)
         .with_price_tag(usdc.amount("0.01").unwrap())
-        .with_requirements_resolver(move |headers: &HeaderMap, uri: &Uri, base_url: &Url, partial| {
-            let partial = partial.to_vec();
-            let base = base_url.clone();
-            let uri = uri.clone();
-            let state = resolver_state.clone();
-            Box::pin(async move {
-                resolve_payment_requirements(headers, &uri, &base, &partial, state).await
-            })
-        });
+        .with_requirements_resolver(
+            move |headers: &HeaderMap, uri: &Uri, base_url: &Url, partial| {
+                let partial = partial.to_vec();
+                let base = base_url.clone();
+                let uri = uri.clone();
+                let state = resolver_state.clone();
+                Box::pin(async move {
+                    resolve_payment_requirements(headers, &uri, &base, &partial, state).await
+                })
+            },
+        );
 
     // Start cleanup task for expired quotes
     let cleanup_state = state.clone();
@@ -195,7 +207,7 @@ async fn main() {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            
+
             let mut store = cleanup_state.quotes.lock().await;
             store.retain(|_, quote_info| quote_info.expires_at > now);
         }
@@ -217,23 +229,27 @@ async fn quote(State(state): State<AppState>, Json(body): Json<QuoteRequest>) ->
     let total_money = MoneyAmount::try_from(body.number_of_files as f64 * 0.01f64).unwrap_or(unit);
 
     let quote_id = Uuid::new_v4().to_string();
-    
+
     // Set quote to expire in 5 minutes
     let expires_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs() + 300; // 5 minutes
+        .as_secs()
+        + 300; // 5 minutes
 
     {
         let mut store = state.quotes.lock().await;
         // Store secure quote info
         // In production, extract bearer token from request headers and validate it
-        store.insert(quote_id.clone(), QuoteInfo {
-            amount: total_money.to_string(),
-            client_id: "demo-client".to_string(), // Demo client - use real auth in production
-            expires_at,
-            used: false,
-        });
+        store.insert(
+            quote_id.clone(),
+            QuoteInfo {
+                amount: total_money.to_string(),
+                client_id: "demo-client".to_string(), // Demo client - use real auth in production
+                expires_at,
+                used: false,
+            },
+        );
     }
 
     let res = serde_json::json!({
@@ -251,4 +267,3 @@ async fn resource() -> impl IntoResponse {
 fn x402_required(accepts: Vec<PaymentRequirements>) -> x402_axum::layer::X402Error {
     x402_axum::layer::X402Error::payment_header_required(accepts)
 }
-

@@ -47,10 +47,10 @@ use crate::from_env;
 use crate::network::{Network, USDCDeployment};
 use crate::timestamp::UnixTimestamp;
 use crate::types::{
-    EvmAddress, EvmSignature, ExactPaymentPayload, FacilitatorErrorReason, HexEncodedNonce,
-    MixedAddress, PaymentPayload, PaymentRequirements, Scheme, SettleRequest, SettleResponse,
-    SupportedPaymentKind, SupportedPaymentKindsResponse, TokenAmount, TransactionHash,
-    TransferWithAuthorization, VerifyRequest, VerifyResponse, X402Version,
+    EvmAddress, EvmSignature, ExactPaymentPayload, Extension, ExtensionKey, FacilitatorErrorReason,
+    HexEncodedNonce, MixedAddress, PaymentPayload, PaymentRequirements, Scheme, SettleRequest,
+    SettleResponse, SupportedPaymentKind, SupportedPaymentKindsResponse, TokenAmount,
+    TransactionHash, TransferWithAuthorization, VerifyRequest, VerifyResponse, X402Version,
 };
 
 sol!(
@@ -439,23 +439,50 @@ where
                 // It is EOA or EIP-1271 signature, which we can pass to the transfer simulation
                 let transfer_call =
                     transferWithAuthorization_0(&contract, &payment, signature).await?;
-                transfer_call
-                    .tx
-                    .call()
-                    .into_future()
-                    .instrument(tracing::info_span!("call_transferWithAuthorization_0",
-                            from = %transfer_call.from,
-                            to = %transfer_call.to,
-                            value = %transfer_call.value,
-                            valid_after = %transfer_call.valid_after,
-                            valid_before = %transfer_call.valid_before,
-                            nonce = %transfer_call.nonce,
-                            signature = %transfer_call.signature,
-                            token_contract = %transfer_call.contract_address,
+
+                if let Some(contract_call) = payload.extensions.as_ref().and_then(|exts| {
+                    exts.iter().find_map(|ext| match ext {
+                        Extension::ContractCall(c) => Some(c),
+                    })
+                }) {
+                    // append the calldata from transfer_call to the end of contract_call.call_data
+                    let mut combined_calldata = contract_call.call_data.clone();
+                    combined_calldata.extend_from_slice(transfer_call.tx.calldata());
+
+                    let contract_call_tx = TransactionRequest::default()
+                        .with_to(contract_call.target_address.into())
+                        .with_from(payment.from.into())
+                        .with_input(combined_calldata);
+
+                    self.inner()
+                        .call(contract_call_tx)
+                        .into_future()
+                        .instrument(tracing::info_span!("call_contract_extension",
+                            target = %contract_call.target_address,
+                            calldata = ?hex::encode(&contract_call.call_data),
                             otel.kind = "client",
-                    ))
-                    .await
-                    .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
+                        ))
+                        .await
+                        .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
+                } else {
+                    transfer_call
+                        .tx
+                        .call()
+                        .into_future()
+                        .instrument(tracing::info_span!("call_transferWithAuthorization_0",
+                                from = %transfer_call.from,
+                                to = %transfer_call.to,
+                                value = %transfer_call.value,
+                                valid_after = %transfer_call.valid_after,
+                                valid_before = %transfer_call.valid_before,
+                                nonce = %transfer_call.nonce,
+                                signature = %transfer_call.signature,
+                                token_contract = %transfer_call.contract_address,
+                                otel.kind = "client",
+                        ))
+                        .await
+                        .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
+                }
             }
         }
 
@@ -557,26 +584,50 @@ where
             StructuredSignature::EIP1271(eip1271_signature) => {
                 let transfer_call =
                     transferWithAuthorization_0(&contract, &payment, eip1271_signature).await?;
-                // transferWithAuthorization with eip1271 signature
-                self.send_transaction(MetaTransaction {
-                    to: transfer_call.tx.target(),
-                    calldata: transfer_call.tx.calldata().clone(),
-                    confirmations: 1,
-                })
-                .instrument(
-                    tracing::info_span!("call_transferWithAuthorization_0",
-                        from = %transfer_call.from,
-                        to = %transfer_call.to,
-                        value = %transfer_call.value,
-                        valid_after = %transfer_call.valid_after,
-                        valid_before = %transfer_call.valid_before,
-                        nonce = %transfer_call.nonce,
-                        signature = %transfer_call.signature,
-                        token_contract = %transfer_call.contract_address,
-                        sig_kind="EIP1271",
-                        otel.kind = "client",
-                    ),
-                )
+
+                if let Some(contract_call) = payload.extensions.as_ref().and_then(|exts| {
+                    exts.iter().find_map(|ext| match ext {
+                        Extension::ContractCall(c) => Some(c),
+                    })
+                }) {
+                    // append the calldata from transfer_call to the end of contract_call.call_data
+                    let mut combined_calldata = contract_call.call_data.clone();
+                    combined_calldata.extend_from_slice(transfer_call.tx.calldata());
+
+                    self.send_transaction(MetaTransaction {
+                        to: contract_call.target_address.into(),
+                        calldata: combined_calldata.into(),
+                        confirmations: 1,
+                    })
+                    .instrument(
+                        tracing::info_span!("call_contract_extension",
+                            target = %contract_call.target_address,
+                            calldata = ?hex::encode(&contract_call.call_data),
+                            otel.kind = "client",
+                        ),
+                    )
+                } else {
+                    // transferWithAuthorization with eip1271 signature
+                    self.send_transaction(MetaTransaction {
+                        to: transfer_call.tx.target(),
+                        calldata: transfer_call.tx.calldata().clone(),
+                        confirmations: 1,
+                    })
+                    .instrument(
+                        tracing::info_span!("call_transferWithAuthorization_0",
+                            from = %transfer_call.from,
+                            to = %transfer_call.to,
+                            value = %transfer_call.value,
+                            valid_after = %transfer_call.valid_after,
+                            valid_before = %transfer_call.valid_before,
+                            nonce = %transfer_call.nonce,
+                            signature = %transfer_call.signature,
+                            token_contract = %transfer_call.contract_address,
+                            sig_kind="EIP1271",
+                            otel.kind = "client",
+                        ),
+                    )
+                }
             }
         };
         let receipt = transaction_receipt_fut.await?;
@@ -619,7 +670,10 @@ where
             scheme: Scheme::Exact,
             extra: None,
         }];
-        Ok(SupportedPaymentKindsResponse { kinds })
+        Ok(SupportedPaymentKindsResponse {
+            kinds,
+            extensions: vec![ExtensionKey::ContractCall],
+        })
     }
 }
 

@@ -15,7 +15,8 @@ use crate::chain::FacilitatorLocalError;
 use crate::facilitator::Facilitator;
 use crate::provider_cache::ProviderMap;
 use crate::types::{
-    SettleRequest, SettleResponse, SupportedPaymentKindsResponse, VerifyRequest, VerifyResponse,
+    ExtensionKey, SettleRequest, SettleResponse, SupportedPaymentKindsResponse, VerifyRequest,
+    VerifyResponse,
 };
 
 /// A concrete [`Facilitator`] implementation that verifies and settles x402 payments
@@ -101,6 +102,9 @@ where
             let mut supported_kinds = supported.map(|k| k.kinds).unwrap_or_default();
             kinds.append(&mut supported_kinds);
         }
-        Ok(SupportedPaymentKindsResponse { kinds })
+        Ok(SupportedPaymentKindsResponse {
+            kinds,
+            extensions: vec![ExtensionKey::ContractCall],
+        })
     }
 }

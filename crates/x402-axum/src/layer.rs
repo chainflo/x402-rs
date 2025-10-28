@@ -238,9 +238,9 @@ where
                 &'a Uri,
                 &'a Url,
                 &'a [PaymentRequirementsNoResource],
-            )
-            -> Pin<Box<dyn Future<Output = Result<Vec<PaymentRequirements>, X402Error>> + Send + 'a>>
-            + Send
+            ) -> Pin<
+                Box<dyn Future<Output = Result<Vec<PaymentRequirements>, X402Error>> + Send + 'a>,
+            > + Send
             + Sync
             + 'static,
     {
@@ -416,7 +416,8 @@ where
         let facilitator = self.facilitator.clone();
         let inner = self.inner.clone();
         Box::pin(async move {
-            let payment_requirements = gather_payment_requirements(offers.as_ref(), req.uri(), req.headers()).await;
+            let payment_requirements =
+                gather_payment_requirements(offers.as_ref(), req.uri(), req.headers()).await;
             let gate = X402Paygate {
                 facilitator,
                 payment_requirements,
@@ -453,6 +454,7 @@ impl X402Error {
             error: ERR_PAYMENT_HEADER_REQUIRED.clone(),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
+            extensions: None,
         };
         Self(payment_required_response)
     }
@@ -462,6 +464,7 @@ impl X402Error {
             error: ERR_INVALID_PAYMENT_HEADER.clone(),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
+            extensions: None,
         };
         Self(payment_required_response)
     }
@@ -471,6 +474,7 @@ impl X402Error {
             error: ERR_NO_PAYMENT_MATCHING.clone(),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
+            extensions: None,
         };
         Self(payment_required_response)
     }
@@ -483,6 +487,7 @@ impl X402Error {
             error: format!("Verification Failed: {error}"),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
+            extensions: None,
         };
         Self(payment_required_response)
     }
@@ -495,6 +500,7 @@ impl X402Error {
             error: format!("Settlement Failed: {error}"),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
+            extensions: None,
         };
         Self(payment_required_response)
     }
@@ -535,6 +541,7 @@ where
                 x402_version: X402Version::V1,
                 error: format!("Unable to retrieve supported payment schemes: {e}"),
                 accepts: vec![],
+                extensions: None,
             })
         })?;
         match payment_header {
@@ -848,9 +855,16 @@ async fn gather_payment_requirements(
                 .collect::<Vec<_>>();
             Arc::new(payment_requirements)
         }
-        PaymentOffers::Resolver { partial, base_url, resolver } => {
+        PaymentOffers::Resolver {
+            partial,
+            base_url,
+            resolver,
+        } => {
             // Call the resolver function to compute dynamic requirements
-            match resolver.resolve(req_headers, req_uri, base_url, partial).await {
+            match resolver
+                .resolve(req_headers, req_uri, base_url, partial)
+                .await
+            {
                 Ok(list) => Arc::new(list),
                 Err(_) => {
                     // If resolver fails, fall back to NoResource behavior
@@ -880,8 +894,7 @@ pub struct PaymentRequirementsResolverFn(
                 &'a Uri,
                 &'a Url,
                 &'a [PaymentRequirementsNoResource],
-            )
-            -> Pin<
+            ) -> Pin<
                 Box<dyn Future<Output = Result<Vec<PaymentRequirements>, X402Error>> + Send + 'a>,
             > + Send
             + Sync,
@@ -911,9 +924,9 @@ impl PaymentRequirementsResolverFn {
                 &'a Uri,
                 &'a Url,
                 &'a [PaymentRequirementsNoResource],
-            )
-            -> Pin<Box<dyn Future<Output = Result<Vec<PaymentRequirements>, X402Error>> + Send + 'a>>
-            + Send
+            ) -> Pin<
+                Box<dyn Future<Output = Result<Vec<PaymentRequirements>, X402Error>> + Send + 'a>,
+            > + Send
             + Sync
             + 'static,
     {

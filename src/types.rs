@@ -297,6 +297,7 @@ pub struct PaymentPayload {
     pub scheme: Scheme,
     pub network: Network,
     pub payload: ExactPaymentPayload,
+    pub extensions: Option<Vec<Extension>>,
 }
 
 /// Error returned when decoding a base64-encoded [`PaymentPayload`] fails.
@@ -1380,16 +1381,18 @@ pub struct PaymentRequiredResponse {
     pub error: String,
     pub accepts: Vec<PaymentRequirements>,
     pub x402_version: X402Version,
+    pub extensions: Option<Vec<Extension>>,
 }
 
 impl Display for PaymentRequiredResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "PaymentRequiredResponse: error='{}', accepts={} requirement(s), version={}",
+            "PaymentRequiredResponse: error='{}', accepts={} requirement(s), version={}, extensions={:?}",
             self.error,
             self.accepts.len(),
-            self.x402_version
+            self.x402_version,
+            self.extensions
         )
     }
 }
@@ -1415,6 +1418,35 @@ pub struct SupportedPaymentKindExtra {
 #[allow(dead_code)] // Public for consumption by downstream crates.
 pub struct SupportedPaymentKindsResponse {
     pub kinds: Vec<SupportedPaymentKind>,
+    pub extensions: Vec<ExtensionKey>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Extension {
+    ContractCall(ContractCallExtension),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractCallExtension {
+    pub target_address: EvmAddress,
+    pub call_data: Vec<u8>,
+}
+
+// A second enum with the *same* variants but as unit variants for the “keys-only” view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExtensionKey {
+    ContractCall,
+}
+
+impl From<&Extension> for ExtensionKey {
+    fn from(e: &Extension) -> Self {
+        match e {
+            Extension::ContractCall(_) => ExtensionKey::ContractCall,
+        }
+    }
 }
 
 sol!(

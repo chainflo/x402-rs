@@ -250,6 +250,7 @@ impl SenderWallet for SolanaSenderWallet {
             payload: ExactPaymentPayload::Solana(ExactSolanaPayload {
                 transaction: tx_b64,
             }),
+            extensions: None,
         };
         Ok(payment_payload)
     }

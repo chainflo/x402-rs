@@ -130,6 +130,7 @@ impl SenderWallet for EvmSenderWallet {
                 signature: EvmSignature::from(signature.as_bytes()),
                 authorization,
             }),
+            extensions: None,
         };
         Ok(payment_payload)
     }

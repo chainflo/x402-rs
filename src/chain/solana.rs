@@ -533,7 +533,10 @@ impl Facilitator for SolanaProvider {
                 fee_payer: self.signer_address(),
             }),
         }];
-        Ok(SupportedPaymentKindsResponse { kinds })
+        Ok(SupportedPaymentKindsResponse {
+            kinds,
+            extensions: vec![],
+        })
     }
 }
 

@@ -57,7 +57,7 @@ use axum_core::{
 use http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use once_cell::sync::Lazy;
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 use std::{
@@ -72,9 +72,9 @@ use url::Url;
 use x402_rs::facilitator::Facilitator;
 use x402_rs::network::Network;
 use x402_rs::types::{
-    Base64Bytes, FacilitatorErrorReason, MixedAddress, PaymentPayload, PaymentRequiredResponse,
-    PaymentRequirements, Scheme, SettleRequest, SettleResponse, TokenAmount, VerifyRequest,
-    VerifyResponse, X402Version,
+    Base64Bytes, Extension, ExtensionKey, FacilitatorErrorReason, MixedAddress, PaymentPayload,
+    PaymentRequiredResponse, PaymentRequirements, Scheme, SettleRequest, SettleResponse,
+    TokenAmount, VerifyRequest, VerifyResponse, X402Version,
 };
 
 #[cfg(feature = "telemetry")]
@@ -111,6 +111,8 @@ pub struct X402Middleware<F> {
     /// - or a partial list without `resource`, in which case the resource URL will be computed dynamically per request.
     ///   In this case, please add `base_url` via [`X402Middleware::with_base_url`].
     payment_offers: Arc<PaymentOffers>,
+    ///
+    extension_resolvers: HashMap<ExtensionKey, ExtensionResolverFn>,
 }
 
 impl TryFrom<&str> for X402Middleware<FacilitatorClient> {
@@ -142,6 +144,7 @@ impl<F> X402Middleware<F> {
             max_timeout_seconds: 300,
             price_tag: Vec::new(),
             payment_offers: Arc::new(PaymentOffers::Ready(Arc::new(Vec::new()))),
+            extension_resolvers: HashMap::new(),
         }
     }
 
@@ -252,6 +255,7 @@ where
             .clone()
             .unwrap_or("application/json".to_string());
         let max_timeout_seconds = this.max_timeout_seconds;
+
         let partial = this
             .price_tag
             .iter()
@@ -280,6 +284,25 @@ where
             base_url,
             resolver: PaymentRequirementsResolverFn::new(resolver),
         });
+        this
+    }
+
+    pub fn with_extension_resolver<R>(&self, extension_key: ExtensionKey, resolver: R) -> Self
+    where
+        R: for<'a> Fn(
+                &'a HeaderMap,
+                &'a [PaymentRequirements],
+            ) -> Pin<
+                Box<dyn Future<Output = Result<Vec<Extension>, X402Error>> + Send + 'a>,
+            > + Send
+            + Sync
+            + 'static,
+    {
+        let mut this = self.clone();
+
+        this.extension_resolvers
+            .insert(extension_key, ExtensionResolverFn::new(resolver));
+
         this
     }
 
@@ -370,6 +393,8 @@ pub struct X402MiddlewareService<F> {
     facilitator: Arc<F>,
     /// Payment requirements either with static or dynamic resource URLs
     payment_offers: Arc<PaymentOffers>,
+    ///
+    extension_resolvers: HashMap<ExtensionKey, ExtensionResolverFn>,
     /// The inner Axum service being wrapped
     inner: BoxCloneSyncService<Request, Response, Infallible>,
 }
@@ -393,6 +418,7 @@ where
             facilitator: self.facilitator.clone(),
             payment_offers: self.payment_offers.clone(),
             inner: BoxCloneSyncService::new(inner),
+            extension_resolvers: self.extension_resolvers.clone(),
         }
     }
 }
@@ -415,12 +441,28 @@ where
         let offers = self.payment_offers.clone();
         let facilitator = self.facilitator.clone();
         let inner = self.inner.clone();
+        let extension_resolvers = self.extension_resolvers.clone();
         Box::pin(async move {
-            let payment_requirements =
-                gather_payment_requirements(offers.as_ref(), req.uri(), req.headers()).await;
+            let payment_requirements = match gather_payment_requirements(
+                offers.as_ref(),
+                req.uri(),
+                req.headers(),
+            )
+            .await
+            {
+                Ok(reqs) => reqs,
+                Err(e) => {
+                    #[cfg(feature = "telemetry")]
+                    tracing::error!("Failed to gather payment requirements: {}", e);
+
+                    return Ok(e.into_response());
+                }
+            };
+
             let gate = X402Paygate {
                 facilitator,
                 payment_requirements,
+                extension_resolvers,
             };
             gate.call(inner, req).await
         })
@@ -449,32 +491,55 @@ static ERR_NO_PAYMENT_MATCHING: Lazy<String> =
 /// Encapsulates a `402 Payment Required` response that can be returned
 /// when payment verification or settlement fails.
 impl X402Error {
-    pub fn payment_header_required(payment_requirements: Vec<PaymentRequirements>) -> Self {
+    pub fn malformed_request<E2: Display>(
+        error: E2,
+        payment_requirements: Vec<PaymentRequirements>,
+        extensions: Option<Vec<Extension>>,
+    ) -> Self {
+        let payment_required_response = PaymentRequiredResponse {
+            error: format!("Malformed Request: {error}"),
+            accepts: payment_requirements,
+            x402_version: X402Version::V1,
+            extensions: extensions,
+        };
+        Self(payment_required_response)
+    }
+
+    pub fn payment_header_required(
+        payment_requirements: Vec<PaymentRequirements>,
+        extensions: Option<Vec<Extension>>,
+    ) -> Self {
         let payment_required_response = PaymentRequiredResponse {
             error: ERR_PAYMENT_HEADER_REQUIRED.clone(),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
-            extensions: None,
+            extensions: extensions,
         };
         Self(payment_required_response)
     }
 
-    pub fn invalid_payment_header(payment_requirements: Vec<PaymentRequirements>) -> Self {
+    pub fn invalid_payment_header(
+        payment_requirements: Vec<PaymentRequirements>,
+        extensions: Option<Vec<Extension>>,
+    ) -> Self {
         let payment_required_response = PaymentRequiredResponse {
             error: ERR_INVALID_PAYMENT_HEADER.clone(),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
-            extensions: None,
+            extensions: extensions,
         };
         Self(payment_required_response)
     }
 
-    pub fn no_payment_matching(payment_requirements: Vec<PaymentRequirements>) -> Self {
+    pub fn no_payment_matching(
+        payment_requirements: Vec<PaymentRequirements>,
+        extensions: Option<Vec<Extension>>,
+    ) -> Self {
         let payment_required_response = PaymentRequiredResponse {
             error: ERR_NO_PAYMENT_MATCHING.clone(),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
-            extensions: None,
+            extensions: extensions,
         };
         Self(payment_required_response)
     }
@@ -482,12 +547,13 @@ impl X402Error {
     pub fn verification_failed<E2: Display>(
         error: E2,
         payment_requirements: Vec<PaymentRequirements>,
+        extensions: Option<Vec<Extension>>,
     ) -> Self {
         let payment_required_response = PaymentRequiredResponse {
             error: format!("Verification Failed: {error}"),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
-            extensions: None,
+            extensions: extensions,
         };
         Self(payment_required_response)
     }
@@ -495,12 +561,13 @@ impl X402Error {
     pub fn settlement_failed<E2: Display>(
         error: E2,
         payment_requirements: Vec<PaymentRequirements>,
+        extensions: Option<Vec<Extension>>,
     ) -> Self {
         let payment_required_response = PaymentRequiredResponse {
             error: format!("Settlement Failed: {error}"),
             accepts: payment_requirements,
             x402_version: X402Version::V1,
-            extensions: None,
+            extensions: extensions,
         };
         Self(payment_required_response)
     }
@@ -524,6 +591,7 @@ impl IntoResponse for X402Error {
 pub struct X402Paygate<F> {
     pub facilitator: Arc<F>,
     pub payment_requirements: Arc<Vec<PaymentRequirements>>,
+    pub extension_resolvers: HashMap<ExtensionKey, ExtensionResolverFn>,
 }
 
 impl<F> X402Paygate<F>
@@ -544,6 +612,23 @@ where
                 extensions: None,
             })
         })?;
+
+        let matched_resolvers = supported
+            .extensions
+            .iter()
+            .filter_map(|ext| self.extension_resolvers.get(&ext).cloned())
+            .collect::<Vec<_>>();
+
+        // todo: maybe error if we have an extension resolver but the extension is not supported by the facilitator?
+
+        let mut extensions = vec![];
+        for resolver in matched_resolvers.iter() {
+            let ext = resolver
+                .resolve(&headers, &self.payment_requirements)
+                .await?;
+            extensions.extend(ext);
+        }
+
         match payment_header {
             None => {
                 let requirements = self
@@ -569,7 +654,10 @@ where
                         }
                     })
                     .collect::<Vec<_>>();
-                Err(X402Error::payment_header_required(requirements))
+                Err(X402Error::payment_header_required(
+                    requirements,
+                    Some(extensions),
+                ))
             }
             Some(payment_header) => {
                 let base64 = Base64Bytes::from(payment_header.as_bytes());
@@ -578,6 +666,7 @@ where
                     Ok(payment_payload) => Ok(payment_payload),
                     Err(_) => Err(X402Error::invalid_payment_header(
                         self.payment_requirements.as_ref().clone(),
+                        Some(extensions),
                     )),
                 }
             }
@@ -611,6 +700,7 @@ where
             .find_matching_payment_requirements(&payment_payload)
             .ok_or(X402Error::no_payment_matching(
                 self.payment_requirements.as_ref().clone(),
+                None,
             ))?;
         let verify_request = VerifyRequest {
             x402_version: payment_payload.x402_version,
@@ -622,13 +712,14 @@ where
             .verify(&verify_request)
             .await
             .map_err(|e| {
-                X402Error::verification_failed(e, self.payment_requirements.as_ref().clone())
+                X402Error::verification_failed(e, self.payment_requirements.as_ref().clone(), None)
             })?;
         match verify_response {
             VerifyResponse::Valid { .. } => Ok(verify_request),
             VerifyResponse::Invalid { reason, .. } => Err(X402Error::verification_failed(
                 reason,
                 self.payment_requirements.as_ref().clone(),
+                None,
             )),
         }
     }
@@ -643,7 +734,7 @@ where
         settle_request: &SettleRequest,
     ) -> Result<SettleResponse, X402Error> {
         let settlement = self.facilitator.settle(settle_request).await.map_err(|e| {
-            X402Error::settlement_failed(e, self.payment_requirements.as_ref().clone())
+            X402Error::settlement_failed(e, self.payment_requirements.as_ref().clone(), None)
         })?;
         if settlement.success {
             Ok(settlement)
@@ -654,6 +745,7 @@ where
             Err(X402Error::settlement_failed(
                 error_reason,
                 self.payment_requirements.as_ref().clone(),
+                None,
             ))
         }
     }
@@ -735,6 +827,7 @@ where
                 return X402Error::settlement_failed(
                     err,
                     self.payment_requirements.as_ref().clone(),
+                    None,
                 )
                 .into_response();
             }
@@ -745,6 +838,7 @@ where
                 return X402Error::settlement_failed(
                     err,
                     self.payment_requirements.as_ref().clone(),
+                    None,
                 )
                 .into_response();
             }
@@ -836,11 +930,11 @@ async fn gather_payment_requirements(
     payment_offers: &PaymentOffers,
     req_uri: &Uri,
     req_headers: &HeaderMap,
-) -> Arc<Vec<PaymentRequirements>> {
+) -> Result<Arc<Vec<PaymentRequirements>>, X402Error> {
     match payment_offers {
         PaymentOffers::Ready(requirements) => {
             // requirements is &Arc<Vec<PaymentRequirements>>
-            Arc::clone(requirements)
+            Ok(Arc::clone(requirements))
         }
         PaymentOffers::NoResource { partial, base_url } => {
             let resource = {
@@ -853,7 +947,7 @@ async fn gather_payment_requirements(
                 .iter()
                 .map(|partial| partial.to_payment_requirements(resource.clone()))
                 .collect::<Vec<_>>();
-            Arc::new(payment_requirements)
+            Ok(Arc::new(payment_requirements))
         }
         PaymentOffers::Resolver {
             partial,
@@ -865,21 +959,8 @@ async fn gather_payment_requirements(
                 .resolve(req_headers, req_uri, base_url, partial)
                 .await
             {
-                Ok(list) => Arc::new(list),
-                Err(_) => {
-                    // If resolver fails, fall back to NoResource behavior
-                    let resource = {
-                        let mut resource_url = base_url.clone();
-                        resource_url.set_path(req_uri.path());
-                        resource_url.set_query(req_uri.query());
-                        resource_url
-                    };
-                    let payment_requirements = partial
-                        .iter()
-                        .map(|partial| partial.to_payment_requirements(resource.clone()))
-                        .collect::<Vec<_>>();
-                    Arc::new(payment_requirements)
-                }
+                Ok(list) => Ok(Arc::new(list)),
+                Err(err) => Err(err),
             }
         }
     }
@@ -941,5 +1022,58 @@ impl PaymentRequirementsResolverFn {
         partial: &[PaymentRequirementsNoResource],
     ) -> Result<Vec<PaymentRequirements>, X402Error> {
         (self.0)(headers, uri, base_url, partial).await
+    }
+}
+
+/// A clonable wrapper for an async resolver function that computes per-request extensions.
+#[derive(Clone)]
+pub struct ExtensionResolverFn(
+    Arc<
+        dyn for<'a> Fn(
+                &'a HeaderMap,
+                &'a [PaymentRequirements],
+            ) -> Pin<
+                Box<dyn Future<Output = Result<Vec<Extension>, X402Error>> + Send + 'a>,
+            > + Send
+            + Sync,
+    >,
+);
+
+impl Debug for ExtensionResolverFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ExtensionResolverFn(<function>)")
+    }
+}
+
+impl PartialEq for ExtensionResolverFn {
+    fn eq(&self, _other: &Self) -> bool {
+        // Function pointers can't be meaningfully compared for equality
+        false
+    }
+}
+
+impl Eq for ExtensionResolverFn {}
+
+impl ExtensionResolverFn {
+    pub fn new<R>(resolver: R) -> Self
+    where
+        R: for<'a> Fn(
+                &'a HeaderMap,
+                &'a [PaymentRequirements],
+            ) -> Pin<
+                Box<dyn Future<Output = Result<Vec<Extension>, X402Error>> + Send + 'a>,
+            > + Send
+            + Sync
+            + 'static,
+    {
+        ExtensionResolverFn(Arc::new(resolver))
+    }
+
+    pub async fn resolve(
+        &self,
+        headers: &HeaderMap,
+        requirements: &[PaymentRequirements],
+    ) -> Result<Vec<Extension>, X402Error> {
+        (self.0)(headers, requirements).await
     }
 }

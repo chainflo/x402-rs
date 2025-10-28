@@ -1431,11 +1431,11 @@ pub enum Extension {
 #[serde(rename_all = "camelCase")]
 pub struct ContractCallExtension {
     pub target_address: EvmAddress,
-    pub call_data: Vec<u8>,
+    pub call_data: Bytes,
 }
 
 // A second enum with the *same* variants but as unit variants for the “keys-only” view.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum ExtensionKey {
     ContractCall,

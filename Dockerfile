@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 COPY . ./
-RUN cargo build --release --locked
+RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/usr/local/cargo/git --mount=type=cache,target=/app/target cargo build --release --locked
 
 # --- Stage 2 ---
 FROM --platform=$BUILDPLATFORM debian:bullseye-slim

@@ -598,13 +598,13 @@ where
 
                     self.send_transaction(MetaTransaction {
                         to: contract_call.target_address.into(),
-                        calldata: combined_calldata.into(),
+                        calldata: combined_calldata.clone().into(),
                         confirmations: 1,
                     })
                     .instrument(
                         tracing::info_span!("call_contract_extension",
                             target = %contract_call.target_address,
-                            calldata = ?hex::encode(&contract_call.call_data),
+                            calldata = ?hex::encode(&combined_calldata),
                             otel.kind = "client",
                         ),
                     )

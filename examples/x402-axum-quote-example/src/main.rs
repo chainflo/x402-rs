@@ -265,5 +265,5 @@ async fn resource() -> impl IntoResponse {
 
 // Helper to construct a 402 via the middleware error type
 fn x402_required(accepts: Vec<PaymentRequirements>) -> x402_axum::layer::X402Error {
-    x402_axum::layer::X402Error::payment_header_required(accepts)
+    x402_axum::layer::X402Error::payment_header_required(accepts, None)
 }

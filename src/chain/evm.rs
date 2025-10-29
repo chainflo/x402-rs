@@ -446,8 +446,9 @@ where
                     })
                 }) {
                     // append the calldata from transfer_call to the end of contract_call.call_data
-                    let mut combined_calldata = contract_call.call_data.clone();
+                    let mut combined_calldata = contract_call.call_data.clone().to_vec();
                     combined_calldata.extend_from_slice(transfer_call.tx.calldata());
+                    let combined_calldata: Bytes = combined_calldata.into();
 
                     let contract_call_tx = TransactionRequest::default()
                         .with_to(contract_call.target_address.into())
@@ -591,8 +592,9 @@ where
                     })
                 }) {
                     // append the calldata from transfer_call to the end of contract_call.call_data
-                    let mut combined_calldata = contract_call.call_data.clone();
+                    let mut combined_calldata = contract_call.call_data.clone().to_vec();
                     combined_calldata.extend_from_slice(transfer_call.tx.calldata());
+                    let combined_calldata: Bytes = combined_calldata.into();
 
                     self.send_transaction(MetaTransaction {
                         to: contract_call.target_address.into(),

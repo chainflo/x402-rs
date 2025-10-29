@@ -10,7 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 COPY . ./
-RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/usr/local/cargo/git --mount=type=cache,target=/app/target cargo build --release --locked
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --locked && \
+    cp /app/target/release/x402-rs /app/x402-rs
 
 # --- Stage 2 ---
 FROM --platform=$BUILDPLATFORM debian:bullseye-slim
@@ -24,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/x402-rs /usr/local/bin/x402-rs
+COPY --from=builder /app/x402-rs /usr/local/bin/x402-rs
 
 EXPOSE $PORT
 ENV RUST_LOG=info

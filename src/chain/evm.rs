@@ -453,14 +453,14 @@ where
                     let contract_call_tx = TransactionRequest::default()
                         .with_to(contract_call.target_address.into())
                         .with_from(payment.from.into())
-                        .with_input(combined_calldata);
+                        .with_input(combined_calldata.clone());
 
                     self.inner()
                         .call(contract_call_tx)
                         .into_future()
                         .instrument(tracing::info_span!("call_contract_extension",
                             target = %contract_call.target_address,
-                            calldata = ?hex::encode(&contract_call.call_data),
+                            calldata = ?hex::encode(&combined_calldata),
                             otel.kind = "client",
                         ))
                         .await

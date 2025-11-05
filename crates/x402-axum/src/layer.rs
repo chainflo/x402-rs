@@ -49,12 +49,15 @@
 //! - Set[`X402Middleware::with_base_url`] to support dynamic resource resolution.
 //! - ⚠️ Avoid relying on fallback `resource` value in production.
 
-use axum_core::body::Body;
 use axum_core::{
+    body::Body,
     extract::Request,
     response::{IntoResponse, Response},
 };
+use bytes::Bytes;
 use http::{HeaderMap, HeaderValue, StatusCode, Uri};
+use http_body::Body as HttpBody;
+use http_body_util::{BodyExt, Limited};
 use once_cell::sync::Lazy;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -291,6 +294,7 @@ where
     where
         R: for<'a> Fn(
                 &'a HeaderMap,
+                &'a Bytes,
                 &'a [PaymentRequirements],
             ) -> Pin<
                 Box<dyn Future<Output = Result<Vec<Extension>, X402Error>> + Send + 'a>,
@@ -602,6 +606,7 @@ where
     pub async fn extract_payment_payload(
         &self,
         headers: &HeaderMap,
+        body: &Bytes,
     ) -> Result<PaymentPayload, X402Error> {
         let payment_header = headers.get("X-Payment");
         let supported = self.facilitator.supported().await.map_err(|e| {
@@ -624,7 +629,7 @@ where
         let mut extensions = vec![];
         for resolver in matched_resolvers.iter() {
             let ext = resolver
-                .resolve(&headers, &self.payment_requirements)
+                .resolve(&headers, &body, &self.payment_requirements)
                 .await?;
             extensions.extend(ext);
         }
@@ -757,7 +762,7 @@ where
     pub async fn call<
         ReqBody,
         ResBody,
-        S: Service<http::Request<ReqBody>, Response = http::Response<ResBody>>,
+        S: Service<http::Request<Body>, Response = http::Response<ResBody>>,
     >(
         self,
         inner: S,
@@ -766,6 +771,8 @@ where
     where
         S::Response: IntoResponse,
         S::Error: IntoResponse,
+        ReqBody: HttpBody<Data = Bytes> + Send + 'static,
+        <ReqBody as HttpBody>::Error: std::error::Error + Send + Sync + 'static,
     {
         Ok(self.handle_request(inner, req).await)
     }
@@ -778,7 +785,7 @@ where
     pub async fn handle_request<
         ReqBody,
         ResBody,
-        S: Service<http::Request<ReqBody>, Response = http::Response<ResBody>>,
+        S: Service<http::Request<Body>, Response = http::Response<ResBody>>,
     >(
         self,
         mut inner: S,
@@ -787,8 +794,18 @@ where
     where
         S::Response: IntoResponse,
         S::Error: IntoResponse,
+        ReqBody: HttpBody<Data = Bytes> + Send + 'static,
+        <ReqBody as HttpBody>::Error: std::error::Error + Send + Sync + 'static,
     {
-        let payment_payload = match self.extract_payment_payload(req.headers()).await {
+        let (mut parts, body) = req.into_parts();
+        let body_bytes: Bytes = to_bytes(Body::new(body), usize::MAX)
+            .await
+            .unwrap_or_default();
+
+        let payment_payload = match self
+            .extract_payment_payload(&parts.headers, &body_bytes)
+            .await
+        {
             Ok(payment_payload) => payment_payload,
             Err(err) => {
                 #[cfg(feature = "telemetry")]
@@ -800,6 +817,18 @@ where
             Ok(verify_request) => verify_request,
             Err(err) => return err.into_response(),
         };
+
+        // Settlement happens before calling the inner service now
+        // We should really allow for multiple options here in the future
+        let settlement: SettleResponse = match self.settle_payment(&verify_request).await {
+            Ok(settlement) => settlement,
+            Err(err) => return err.into_response(),
+        };
+
+        parts.extensions.insert(settlement.clone());
+
+        let req = http::Request::from_parts(parts.clone(), Body::from(body_bytes.clone()));
+
         let inner_fut = {
             #[cfg(feature = "telemetry")]
             {
@@ -817,10 +846,6 @@ where
         if response.status().is_client_error() || response.status().is_server_error() {
             return response.into_response();
         }
-        let settlement = match self.settle_payment(&verify_request).await {
-            Ok(settlement) => settlement,
-            Err(err) => return err.into_response(),
-        };
         let payment_header: Base64Bytes = match settlement.try_into() {
             Ok(payment_header) => payment_header,
             Err(err) => {
@@ -966,6 +991,14 @@ async fn gather_payment_requirements(
     }
 }
 
+pub async fn to_bytes(body: Body, limit: usize) -> Result<Bytes, axum_core::Error> {
+    Limited::new(body, limit)
+        .collect()
+        .await
+        .map(|col| col.to_bytes())
+        .map_err(axum_core::Error::new)
+}
+
 /// A clonable wrapper for an async resolver function that computes per-request requirements.
 #[derive(Clone)]
 pub struct PaymentRequirementsResolverFn(
@@ -1031,6 +1064,7 @@ pub struct ExtensionResolverFn(
     Arc<
         dyn for<'a> Fn(
                 &'a HeaderMap,
+                &'a Bytes,
                 &'a [PaymentRequirements],
             ) -> Pin<
                 Box<dyn Future<Output = Result<Vec<Extension>, X402Error>> + Send + 'a>,
@@ -1059,6 +1093,7 @@ impl ExtensionResolverFn {
     where
         R: for<'a> Fn(
                 &'a HeaderMap,
+                &'a Bytes,
                 &'a [PaymentRequirements],
             ) -> Pin<
                 Box<dyn Future<Output = Result<Vec<Extension>, X402Error>> + Send + 'a>,
@@ -1072,8 +1107,9 @@ impl ExtensionResolverFn {
     pub async fn resolve(
         &self,
         headers: &HeaderMap,
+        body: &Bytes,
         requirements: &[PaymentRequirements],
     ) -> Result<Vec<Extension>, X402Error> {
-        (self.0)(headers, requirements).await
+        (self.0)(headers, body, requirements).await
     }
 }

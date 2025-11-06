@@ -8905,7 +8905,7 @@ dependencies = [
 
 [[package]]
 name = "x402-axum"
-version = "0.5.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "axum-core",
@@ -8921,7 +8921,7 @@ dependencies = [
  "tower",
  "tracing",
  "url",
- "x402-rs 0.9.0 (git+https://github.com/chainflo/x402-rs.git?branch=chainflo)",
+ "x402-rs",
 ]
 
 [[package]]
@@ -8931,13 +8931,14 @@ dependencies = [
  "axum",
  "dotenvy",
  "opentelemetry",
+ "serde_json",
  "tokio",
  "tower-http",
  "tracing",
  "tracing-opentelemetry",
  "url",
  "x402-axum",
- "x402-rs 0.9.0",
+ "x402-rs",
 ]
 
 [[package]]
@@ -8953,7 +8954,7 @@ dependencies = [
  "url",
  "uuid",
  "x402-axum",
- "x402-rs 0.9.0",
+ "x402-rs",
 ]
 
 [[package]]
@@ -8976,7 +8977,7 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
- "x402-rs 0.9.0",
+ "x402-rs",
 ]
 
 [[package]]
@@ -8993,50 +8994,12 @@ dependencies = [
  "spl-token-2022 9.0.0",
  "tokio",
  "x402-reqwest",
- "x402-rs 0.9.0",
+ "x402-rs",
 ]
 
 [[package]]
 name = "x402-rs"
-version = "0.9.0"
-dependencies = [
- "alloy",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "bincode",
- "dashmap 6.1.0",
- "dotenvy",
- "once_cell",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
- "opentelemetry-stdout",
- "opentelemetry_sdk",
- "regex",
- "rust_decimal",
- "serde",
- "serde_json",
- "solana-client",
- "solana-commitment-config",
- "solana-sdk",
- "spl-token",
- "spl-token-2022 9.0.0",
- "thiserror 2.0.12",
- "tokio",
- "tokio-util",
- "tower-http",
- "tracing",
- "tracing-core",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
-name = "x402-rs"
-version = "0.9.0"
-source = "git+https://github.com/chainflo/x402-rs.git?branch=chainflo#e1a302c5342271a894366033c3d3737cf0e0c539"
+version = "0.9.1"
 dependencies = [
  "alloy",
  "async-trait",

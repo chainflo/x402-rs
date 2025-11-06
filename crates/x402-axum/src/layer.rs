@@ -1,7 +1,7 @@
 //! Axum middleware for enforcing [x402](https://www.x402.org) payments on protected routes.
 //!
 //! This middleware validates incoming `X-Payment` headers using a configured x402 facilitator,
-//! and settles valid payments before allowing the request to proceed (but after your business logic!).
+//! and settles valid payments either before or after request execution (configurable).
 //!
 //! Returns a `402 Payment Required` JSON response if the request lacks a valid payment.
 //!
@@ -33,6 +33,15 @@
 //! }
 //! ```
 //!
+//! ## Settlement Timing
+//!
+//! By default, settlement occurs **after** the request is processed. You can change this behavior:
+//!
+//! - **[`X402Middleware::settle_before_execution`]** - Settle payment **before** request execution.
+//!   This prevents issues where failed settlements need retry or authorization expires.
+//! - **[`X402Middleware::settle_after_execution`]** - Settle payment **after** request execution (default).
+//!   This allows processing the request before committing the payment on-chain.
+//!
 //! ## Configuration Notes
 //!
 //! - **[`X402Middleware::with_price_tag`]** sets the assets and amounts accepted for payment.
@@ -47,6 +56,7 @@
 //!
 //! - Use [`X402Middleware::with_resource`] when the full resource URL is known.
 //! - Set[`X402Middleware::with_base_url`] to support dynamic resource resolution.
+//! - Consider using [`X402Middleware::settle_before_execution`] to avoid settlement failure recovery issues.
 //! - ⚠️ Avoid relying on fallback `resource` value in production.
 
 use axum_core::{
@@ -107,6 +117,12 @@ pub struct X402Middleware<F> {
     price_tag: Vec<PriceTag>,
     /// Timeout in seconds for payment settlement.
     max_timeout_seconds: u64,
+    /// Optional input schema describing the API endpoint's input specification.
+    input_schema: Option<serde_json::Value>,
+    /// Optional output schema describing the API endpoint's output specification.
+    output_schema: Option<serde_json::Value>,
+    /// Whether to settle payment before executing the request (true) or after (false, default).
+    settle_before_execution: bool,
     /// Cached set of payment offers for this middleware instance.
     ///
     /// This field holds either:
@@ -114,7 +130,7 @@ pub struct X402Middleware<F> {
     /// - or a partial list without `resource`, in which case the resource URL will be computed dynamically per request.
     ///   In this case, please add `base_url` via [`X402Middleware::with_base_url`].
     payment_offers: Arc<PaymentOffers>,
-    ///
+    /// A map of extension resolvers for handling x402 extensions
     extension_resolvers: HashMap<ExtensionKey, ExtensionResolverFn>,
 }
 
@@ -146,6 +162,9 @@ impl<F> X402Middleware<F> {
             base_url: None,
             max_timeout_seconds: 300,
             price_tag: Vec::new(),
+            input_schema: None,
+            output_schema: None,
+            settle_before_execution: false,
             payment_offers: Arc::new(PaymentOffers::Ready(Arc::new(Vec::new()))),
             extension_resolvers: HashMap::new(),
         }
@@ -306,7 +325,110 @@ where
 
         this.extension_resolvers
             .insert(extension_key, ExtensionResolverFn::new(resolver));
+        this
+    }
 
+    /// Sets the input schema describing the API endpoint's expected inputs.
+    ///
+    /// The input schema will be embedded in `PaymentRequirements.outputSchema.input`.
+    /// This can include information about HTTP method, query parameters, headers, body schema, etc.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use serde_json::json;
+    ///
+    /// let input_schema = json!({
+    ///     "type": "http",
+    ///     "method": "GET",
+    ///     "discoverable": true,
+    ///     "queryParams": {
+    ///         "location": {
+    ///             "type": "string",
+    ///             "description": "City name",
+    ///             "required": true
+    ///         }
+    ///     }
+    /// });
+    ///
+    /// x402.with_input_schema(input_schema)
+    /// ```
+    #[allow(dead_code)] // Public for consumption by downstream crates.
+    pub fn with_input_schema(&self, schema: serde_json::Value) -> Self {
+        let mut this = self.clone();
+        this.input_schema = Some(schema);
+        this.recompute_offers()
+    }
+
+    /// Sets the output schema describing the API endpoint's response format.
+    ///
+    /// The output schema will be embedded in `PaymentRequirements.outputSchema.output`.
+    /// This can include information about the response structure, content type, etc.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use serde_json::json;
+    ///
+    /// let output_schema = json!({
+    ///     "type": "object",
+    ///     "properties": {
+    ///         "temperature": { "type": "number" },
+    ///         "conditions": { "type": "string" }
+    ///     }
+    /// });
+    ///
+    /// x402.with_output_schema(output_schema)
+    /// ```
+    #[allow(dead_code)] // Public for consumption by downstream crates.
+    pub fn with_output_schema(&self, schema: serde_json::Value) -> Self {
+        let mut this = self.clone();
+        this.output_schema = Some(schema);
+        this.recompute_offers()
+    }
+
+    /// Enables settlement prior to request execution.
+    ///
+    /// When enabled, the payment will be settled on-chain **before** the protected
+    /// request handler is invoked. This prevents issues where:
+    /// - Failed settlements need to be retried via an external process
+    /// - Payment authorization expires before final settlement
+    ///
+    /// When disabled (default), settlement occurs after successful request execution.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use x402_axum::X402Middleware;
+    /// use x402_rs::network::{Network, USDCDeployment};
+    /// use x402_axum::IntoPriceTag;
+    ///
+    /// let x402 = X402Middleware::try_from("https://facilitator.example.com/")
+    ///     .unwrap()
+    ///     .settle_before_execution()
+    ///     .with_price_tag(
+    ///         USDCDeployment::by_network(Network::BaseSepolia)
+    ///             .amount("0.01")
+    ///             .pay_to("0xADDRESS")
+    ///             .unwrap()
+    ///     );
+    /// ```
+    #[allow(dead_code)] // Public for consumption by downstream crates.
+    pub fn settle_before_execution(&self) -> Self {
+        let mut this = self.clone();
+        this.settle_before_execution = true;
+        this
+    }
+
+    /// Disables settlement prior to request execution (default behavior).
+    ///
+    /// When disabled, settlement occurs after successful request execution.
+    /// This is the default behavior and allows the application to process
+    /// the request before committing the payment on-chain.
+    #[allow(dead_code)] // Public for consumption by downstream crates.
+    pub fn settle_after_execution(&self) -> Self {
+        let mut this = self.clone();
+        this.settle_before_execution = false;
         this
     }
 
@@ -318,6 +440,22 @@ where
             .clone()
             .unwrap_or("application/json".to_string());
         let max_timeout_seconds = self.max_timeout_seconds;
+
+        // Construct the complete output_schema from input and output schemas
+        let complete_output_schema = match (&self.input_schema, &self.output_schema) {
+            (Some(input), Some(output)) => Some(json!({
+                "input": input,
+                "output": output
+            })),
+            (Some(input), None) => Some(json!({
+                "input": input
+            })),
+            (None, Some(output)) => Some(json!({
+                "output": output
+            })),
+            (None, None) => None,
+        };
+
         let payment_offers = if let Some(resource) = self.resource.clone() {
             let payment_requirements = self
                 .price_tag
@@ -342,7 +480,7 @@ where
                         max_timeout_seconds,
                         asset: price_tag.token.address(),
                         extra,
-                        output_schema: None,
+                        output_schema: complete_output_schema.clone(),
                     }
                 })
                 .collect::<Vec<_>>();
@@ -370,7 +508,7 @@ where
                         max_timeout_seconds,
                         asset: price_tag.token.address(),
                         extra,
-                        output_schema: None,
+                        output_schema: complete_output_schema.clone(),
                     }
                 })
                 .collect::<Vec<_>>();
@@ -397,8 +535,10 @@ pub struct X402MiddlewareService<F> {
     facilitator: Arc<F>,
     /// Payment requirements either with static or dynamic resource URLs
     payment_offers: Arc<PaymentOffers>,
-    ///
+    /// A map of extension resolvers for handling x402 extensions
     extension_resolvers: HashMap<ExtensionKey, ExtensionResolverFn>,
+    /// Whether to settle payment before executing the request (true) or after (false)
+    settle_before_execution: bool,
     /// The inner Axum service being wrapped
     inner: BoxCloneSyncService<Request, Response, Infallible>,
 }
@@ -421,6 +561,7 @@ where
         X402MiddlewareService {
             facilitator: self.facilitator.clone(),
             payment_offers: self.payment_offers.clone(),
+            settle_before_execution: self.settle_before_execution,
             inner: BoxCloneSyncService::new(inner),
             extension_resolvers: self.extension_resolvers.clone(),
         }
@@ -445,6 +586,7 @@ where
         let offers = self.payment_offers.clone();
         let facilitator = self.facilitator.clone();
         let inner = self.inner.clone();
+        let settle_before_execution = self.settle_before_execution;
         let extension_resolvers = self.extension_resolvers.clone();
         Box::pin(async move {
             let payment_requirements = match gather_payment_requirements(
@@ -467,6 +609,7 @@ where
                 facilitator,
                 payment_requirements,
                 extension_resolvers,
+                settle_before_execution,
             };
             gate.call(inner, req).await
         })
@@ -596,6 +739,7 @@ pub struct X402Paygate<F> {
     pub facilitator: Arc<F>,
     pub payment_requirements: Arc<Vec<PaymentRequirements>>,
     pub extension_resolvers: HashMap<ExtensionKey, ExtensionResolverFn>,
+    pub settle_before_execution: bool,
 }
 
 impl<F> X402Paygate<F>
@@ -771,10 +915,56 @@ where
     where
         S::Response: IntoResponse,
         S::Error: IntoResponse,
+        S::Future: Send,
         ReqBody: HttpBody<Data = Bytes> + Send + 'static,
         <ReqBody as HttpBody>::Error: std::error::Error + Send + Sync + 'static,
     {
         Ok(self.handle_request(inner, req).await)
+    }
+
+    /// Converts a [`SettleResponse`] into an HTTP header value.
+    ///
+    /// Returns an error response if conversion fails.
+    fn settlement_to_header(
+        &self,
+        settlement: SettleResponse,
+    ) -> Result<HeaderValue, Box<Response>> {
+        let payment_header: Base64Bytes = settlement.try_into().map_err(|err| {
+            X402Error::settlement_failed(err, self.payment_requirements.as_ref().clone(), None)
+                .into_response()
+        })?;
+
+        HeaderValue::from_bytes(payment_header.as_ref()).map_err(|err| {
+            let response =
+                X402Error::settlement_failed(err, self.payment_requirements.as_ref().clone(), None)
+                    .into_response();
+            Box::new(response)
+        })
+    }
+
+    /// Calls the inner service with proper telemetry instrumentation.
+    async fn call_inner<
+        ReqBody,
+        ResBody,
+        S: Service<http::Request<ReqBody>, Response = http::Response<ResBody>>,
+    >(
+        mut inner: S,
+        req: http::Request<ReqBody>,
+    ) -> Result<http::Response<ResBody>, S::Error>
+    where
+        S::Future: Send,
+    {
+        #[cfg(feature = "telemetry")]
+        {
+            inner
+                .call(req)
+                .instrument(tracing::info_span!("inner"))
+                .await
+        }
+        #[cfg(not(feature = "telemetry"))]
+        {
+            inner.call(req).await
+        }
     }
 
     /// Orchestrates the full payment lifecycle: verifies the request, calls to the inner handler, and settles the payment, returns proper HTTP response.
@@ -788,12 +978,13 @@ where
         S: Service<http::Request<Body>, Response = http::Response<ResBody>>,
     >(
         self,
-        mut inner: S,
+        inner: S,
         req: http::Request<ReqBody>,
     ) -> Response
     where
         S::Response: IntoResponse,
         S::Error: IntoResponse,
+        S::Future: Send,
         ReqBody: HttpBody<Data = Bytes> + Send + 'static,
         <ReqBody as HttpBody>::Error: std::error::Error + Send + Sync + 'static,
     {
@@ -818,59 +1009,64 @@ where
             Err(err) => return err.into_response(),
         };
 
-        // Settlement happens before calling the inner service now
-        // We should really allow for multiple options here in the future
-        let settlement: SettleResponse = match self.settle_payment(&verify_request).await {
-            Ok(settlement) => settlement,
-            Err(err) => return err.into_response(),
-        };
-
-        parts.extensions.insert(settlement.clone());
-
-        let req = http::Request::from_parts(parts.clone(), Body::from(body_bytes.clone()));
-
-        let inner_fut = {
+        if self.settle_before_execution {
+            // Settlement before execution: settle payment first, then call inner handler
             #[cfg(feature = "telemetry")]
-            {
-                inner.call(req).instrument(tracing::info_span!("inner"))
+            tracing::debug!("Settling payment before request execution");
+
+            let settlement = match self.settle_payment(&verify_request).await {
+                Ok(settlement) => settlement,
+                Err(err) => return err.into_response(),
+            };
+
+            let header_value = match self.settlement_to_header(settlement.clone()) {
+                Ok(header) => header,
+                Err(response) => return *response,
+            };
+
+            parts.extensions.insert(settlement);
+            let req = http::Request::from_parts(parts.clone(), Body::from(body_bytes.clone()));
+
+            // Settlement succeeded, now execute the request
+            let response = match Self::call_inner(inner, req).await {
+                Ok(response) => response,
+                Err(err) => return err.into_response(),
+            };
+
+            // Add payment response header
+            let mut res = response;
+            res.headers_mut().insert("X-Payment-Response", header_value);
+            res.into_response()
+        } else {
+            // Settlement after execution (default): call inner handler first, then settle
+            #[cfg(feature = "telemetry")]
+            tracing::debug!("Settling payment after request execution");
+
+            let req = http::Request::from_parts(parts.clone(), Body::from(body_bytes.clone()));
+
+            let response = match Self::call_inner(inner, req).await {
+                Ok(response) => response,
+                Err(err) => return err.into_response(),
+            };
+
+            if response.status().is_client_error() || response.status().is_server_error() {
+                return response.into_response();
             }
-            #[cfg(not(feature = "telemetry"))]
-            {
-                inner.call(req)
-            }
-        };
-        let response = match inner_fut.await {
-            Ok(response) => response,
-            Err(err) => return err.into_response(),
-        };
-        if response.status().is_client_error() || response.status().is_server_error() {
-            return response.into_response();
+
+            let settlement = match self.settle_payment(&verify_request).await {
+                Ok(settlement) => settlement,
+                Err(err) => return err.into_response(),
+            };
+
+            let header_value = match self.settlement_to_header(settlement) {
+                Ok(header) => header,
+                Err(response) => return *response,
+            };
+
+            let mut res = response;
+            res.headers_mut().insert("X-Payment-Response", header_value);
+            res.into_response()
         }
-        let payment_header: Base64Bytes = match settlement.try_into() {
-            Ok(payment_header) => payment_header,
-            Err(err) => {
-                return X402Error::settlement_failed(
-                    err,
-                    self.payment_requirements.as_ref().clone(),
-                    None,
-                )
-                .into_response();
-            }
-        };
-        let header_value = match HeaderValue::from_bytes(payment_header.as_ref()) {
-            Ok(header_value) => header_value,
-            Err(err) => {
-                return X402Error::settlement_failed(
-                    err,
-                    self.payment_requirements.as_ref().clone(),
-                    None,
-                )
-                .into_response();
-            }
-        };
-        let mut res = response;
-        res.headers_mut().insert("X-Payment-Response", header_value);
-        res.into_response()
     }
 }
 

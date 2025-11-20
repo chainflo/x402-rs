@@ -44,6 +44,9 @@ jobs:
           ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
             set -e
 
+            # Fix permissions after rsync
+            chown -R ramp402:ramp402 /home/ramp402/ramp402/x402-rs
+
             # Switch to app user and build
             sudo -u ramp402 bash -c '
               cd /home/ramp402/ramp402/x402-rs
@@ -51,12 +54,15 @@ jobs:
               cargo build --release --locked
             '
 
+            # Stop service before replacing binary
+            systemctl stop ramp402-facilitator
+
             # Copy binary to system location
             cp /home/ramp402/ramp402/x402-rs/target/release/x402-rs /usr/local/bin/
             chmod +x /usr/local/bin/x402-rs
 
-            # Restart service
-            systemctl restart ramp402-facilitator
+            # Start service
+            systemctl start ramp402-facilitator
 
             # Wait for service to start
             sleep 3

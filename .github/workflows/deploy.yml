@@ -1,0 +1,107 @@
+name: Deploy Facilitator
+
+on:
+  push:
+    branches:
+      - chainflo
+  workflow_dispatch:  # Allow manual triggers
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Sync facilitator code to server
+        run: |
+          rsync -avz --delete \
+            --exclude 'target' \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude '.env' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/home/ramp402/ramp402/x402-rs/
+
+      - name: Deploy .env file (if provided)
+        if: ${{ secrets.FACILITATOR_ENV != '' }}
+        run: |
+          echo "${{ secrets.FACILITATOR_ENV }}" | ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "cat > /home/ramp402/ramp402/x402-rs/.env && chmod 600 /home/ramp402/ramp402/x402-rs/.env && chown ramp402:ramp402 /home/ramp402/ramp402/x402-rs/.env"
+
+      - name: Build and deploy facilitator
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
+            set -e
+
+            # Switch to app user and build
+            sudo -u ramp402 bash -c '
+              cd /home/ramp402/ramp402/x402-rs
+              source /home/ramp402/.cargo/env
+              cargo build --release --locked
+            '
+
+            # Copy binary to system location
+            cp /home/ramp402/ramp402/x402-rs/target/release/x402-rs /usr/local/bin/
+            chmod +x /usr/local/bin/x402-rs
+
+            # Restart service
+            systemctl restart ramp402-facilitator
+
+            # Wait for service to start
+            sleep 3
+
+            # Check service status
+            systemctl status ramp402-facilitator --no-pager
+          EOF
+
+      - name: Verify deployment
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
+            set -e
+
+            # Check if service is active
+            if systemctl is-active --quiet ramp402-facilitator; then
+              echo "✓ Facilitator service is running"
+
+              # Wait a bit and check if port is listening
+              sleep 2
+              if ss -tlnp | grep -q ':8080'; then
+                echo "✓ Facilitator is listening on port 8080"
+              else
+                echo "⚠ Warning: Port 8080 not detected"
+              fi
+            else
+              echo "✗ Facilitator service failed to start"
+              journalctl -u ramp402-facilitator -n 50 --no-pager
+              exit 1
+            fi
+          EOF
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "========================================="
+          echo "Facilitator Deployment Complete!"
+          echo "========================================="
+          echo ""
+          echo "Deployed to: ${{ secrets.DEPLOY_HOST }}"
+          echo "Service: ramp402-facilitator"
+          echo "Status: Active"
+          echo ""
+          echo "X402 facilitator is now live!"
+          echo "========================================="
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

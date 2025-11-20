@@ -67,6 +67,12 @@ jobs:
             sleep 3
 
             # Check service status
+            if ! systemctl is-active --quiet ramp402-facilitator; then
+              echo "Service failed to start. Checking logs:"
+              journalctl -u ramp402-facilitator -n 50 --no-pager
+              exit 1
+            fi
+
             systemctl status ramp402-facilitator --no-pager
           EOF
 

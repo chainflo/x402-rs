@@ -56,6 +56,13 @@ jobs:
             # Stop service before replacing binary
             systemctl stop ramp402-facilitator
 
+            # Wait for service to fully stop and verify
+            sleep 2
+            while systemctl is-active --quiet ramp402-facilitator; do
+              echo "Waiting for service to stop..."
+              sleep 1
+            done
+
             # Copy binary to system location
             cp /home/ramp402/ramp402/x402-rs/target/release/x402-rs /usr/local/bin/
             chmod +x /usr/local/bin/x402-rs

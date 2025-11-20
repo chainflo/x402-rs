@@ -32,8 +32,7 @@ jobs:
             -e "ssh -i ~/.ssh/deploy_key" \
             ./ ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/home/ramp402/ramp402/x402-rs/
 
-      - name: Deploy .env file (if provided)
-        if: ${{ secrets.FACILITATOR_ENV != '' }}
+      - name: Deploy .env file
         run: |
           echo "${{ secrets.FACILITATOR_ENV }}" | ssh -i ~/.ssh/deploy_key \
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \

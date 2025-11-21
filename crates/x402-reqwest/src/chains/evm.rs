@@ -63,6 +63,7 @@ impl SenderWallet for EvmSenderWallet {
     async fn payment_payload(
         &self,
         selected: PaymentRequirements,
+        extensions: Option<Vec<x402_rs::types::Extension>>,
     ) -> Result<PaymentPayload, X402PaymentsError> {
         let (name, version) = match selected.extra {
             None => (None, None),
@@ -130,7 +131,7 @@ impl SenderWallet for EvmSenderWallet {
                 signature: EvmSignature::from(signature.as_bytes()),
                 authorization,
             }),
-            extensions: None,
+            extensions,
         };
         Ok(payment_payload)
     }

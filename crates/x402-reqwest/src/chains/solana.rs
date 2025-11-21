@@ -88,6 +88,7 @@ impl SenderWallet for SolanaSenderWallet {
     async fn payment_payload(
         &self,
         selected: PaymentRequirements,
+        extensions: Option<Vec<x402_rs::types::Extension>>,
     ) -> Result<PaymentPayload, X402PaymentsError> {
         let asset: SolanaAddress = selected.asset.clone().try_into().map_err(|e| {
             X402PaymentsError::SigningError(format!(
@@ -250,7 +251,7 @@ impl SenderWallet for SolanaSenderWallet {
             payload: ExactPaymentPayload::Solana(ExactSolanaPayload {
                 transaction: tx_b64,
             }),
-            extensions: None,
+            extensions,
         };
         Ok(payment_payload)
     }

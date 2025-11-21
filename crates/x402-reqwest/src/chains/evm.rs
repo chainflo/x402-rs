@@ -116,16 +116,13 @@ impl SenderWallet for EvmSenderWallet {
             nonce: FixedBytes(nonce),
         };
         let eip712_hash = transfer_with_authorization.eip712_signing_hash(&domain);
-        let mut signature = self
+        let signature = self
             .signer
             .sign_hash(&eip712_hash)
             .await
             .map_err(|e| X402PaymentsError::SigningError(format!("{e:?}")))?;
-        // Normalize the signature to ensure 's' is in the lower half of the curve (EIP-2)
-        // This prevents signature malleability and ensures compatibility with ECRecover
-        signature.normalize_s();
         #[cfg(feature = "telemetry")]
-        tracing::debug!(?signature, "Signature obtained and normalized");
+        tracing::debug!(?signature, "Signature obtained");
         let payment_payload = PaymentPayload {
             x402_version: x402_rs::types::X402Version::V1,
             scheme: Scheme::Exact,

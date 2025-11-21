@@ -121,6 +121,9 @@ impl SenderWallet for EvmSenderWallet {
             .sign_hash(&eip712_hash)
             .await
             .map_err(|e| X402PaymentsError::SigningError(format!("{e:?}")))?;
+        // Normalize to low-s form to satisfy EIP-2 checks enforced by USDC's ECRecover
+        // (this flips the parity bit when needed).
+        let signature = signature.normalized_s();
         #[cfg(feature = "telemetry")]
         tracing::debug!(?signature, "Signature obtained");
         let payment_payload = PaymentPayload {

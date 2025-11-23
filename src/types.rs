@@ -1424,27 +1424,27 @@ pub struct SupportedPaymentKindsResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Extension {
-    ContractCall(ContractCallExtension),
+    ERC3009Hooker(ERC3009HookerExtension),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ContractCallExtension {
-    pub target_address: EvmAddress,
-    pub call_data: Bytes,
+pub struct ERC3009HookerExtension {
+    pub pre: Hook,
+    pub post: Hook,
 }
 
 // A second enum with the *same* variants but as unit variants for the “keys-only” view.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum ExtensionKey {
-    ContractCall,
+    ERC3009Hooker,
 }
 
 impl From<&Extension> for ExtensionKey {
     fn from(e: &Extension) -> Self {
         match e {
-            Extension::ContractCall(_) => ExtensionKey::ContractCall,
+            Extension::ERC3009Hooker(_) => ExtensionKey::ERC3009Hooker,
         }
     }
 }
@@ -1467,5 +1467,11 @@ sol!(
         uint256 validAfter;
         uint256 validBefore;
         bytes32 nonce;
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    struct Hook {
+        address to;
+        bytes input;
     }
 );

@@ -104,7 +104,7 @@ where
         }
         Ok(SupportedPaymentKindsResponse {
             kinds,
-            extensions: vec![ExtensionKey::ContractCall],
+            extensions: vec![ExtensionKey::ERC3009Hooker],
         })
     }
 }

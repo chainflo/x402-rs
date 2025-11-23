@@ -48,9 +48,10 @@ use crate::network::{Network, USDCDeployment};
 use crate::timestamp::UnixTimestamp;
 use crate::types::{
     EvmAddress, EvmSignature, ExactPaymentPayload, Extension, ExtensionKey, FacilitatorErrorReason,
-    HexEncodedNonce, MixedAddress, PaymentPayload, PaymentRequirements, Scheme, SettleRequest,
-    SettleResponse, SupportedPaymentKind, SupportedPaymentKindsResponse, TokenAmount,
-    TransactionHash, TransferWithAuthorization, VerifyRequest, VerifyResponse, X402Version,
+    HexEncodedNonce, Hook, MixedAddress, PaymentPayload, PaymentRequirements, Scheme,
+    SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindsResponse,
+    TokenAmount, TransactionHash, TransferWithAuthorization, VerifyRequest, VerifyResponse,
+    X402Version,
 };
 
 sol!(
@@ -71,9 +72,33 @@ sol! {
     "abi/Validator6492.json"
 }
 
+sol! {
+    #[allow(missing_docs)]
+    #[allow(clippy::too_many_arguments)]
+    #[derive(Debug)]
+    #[sol(rpc)]
+    ERC3009Hooker,
+    "abi/ERC3009Hooker.json"
+}
+
+impl From<Hook> for ERC3009Hooker::Hook {
+    fn from(value: Hook) -> Self {
+        Self {
+            to: value.to,
+            input: value.input,
+        }
+    }
+}
+
 /// Signature verifier for EIP-6492, EIP-1271, EOA, universally deployed on the supported EVM chains
 /// If absent on a target chain, verification will fail; you should deploy the validator there.
 const VALIDATOR_ADDRESS: alloy::primitives::Address =
+    address!("0xdAcD51A54883eb67D95FAEb2BBfdC4a9a6BD2a3B");
+
+/// Onchain exectuor for the ERC3009Hooker extension, unviersally deployed on the supported EVM chains
+/// If absent on a target chain, hooks will fail; you should deploy the hooker there.
+/// TODO: fill in address after deployment
+const ERC3009_HOOKER_ADDRESS: alloy::primitives::Address =
     address!("0xdAcD51A54883eb67D95FAEb2BBfdC4a9a6BD2a3B");
 
 /// Combined filler type for gas, blob gas, nonce, and chain ID.
@@ -440,28 +465,38 @@ where
                 let transfer_call =
                     transferWithAuthorization_0(&contract, &payment, signature).await?;
 
-                if let Some(contract_call) = payload.extensions.as_ref().and_then(|exts| {
+                if let Some(erc3009_hook) = payload.extensions.as_ref().and_then(|exts| {
                     exts.iter().find_map(|ext| match ext {
-                        Extension::ContractCall(c) => Some(c),
+                        Extension::ERC3009Hooker(c) => Some(c),
                     })
                 }) {
-                    // append the calldata from transfer_call to the end of contract_call.call_data
-                    let mut combined_calldata = contract_call.call_data.clone().to_vec();
-                    combined_calldata.extend_from_slice(transfer_call.tx.calldata());
-                    let combined_calldata: Bytes = combined_calldata.into();
-
-                    let contract_call_tx = TransactionRequest::default()
-                        .with_to(contract_call.target_address.into())
-                        .with_from(payment.from.into())
-                        .with_input(combined_calldata.clone());
-
-                    self.inner()
-                        .call(contract_call_tx)
+                    let transfer_calldata_without_first_4_bytes =
+                        transfer_call.tx.calldata().clone().split_off(4);
+                    let hooker_contract = ERC3009Hooker::new(ERC3009_HOOKER_ADDRESS, self.inner());
+                    hooker_contract
+                        .exec(
+                            erc3009_hook.pre.clone().into(),
+                            transfer_call.contract_address,
+                            transfer_calldata_without_first_4_bytes,
+                            erc3009_hook.post.clone().into(),
+                        )
+                        .call()
                         .into_future()
-                        .instrument(tracing::info_span!("call_contract_extension",
-                            target = %contract_call.target_address,
-                            calldata = ?hex::encode(&combined_calldata),
-                            otel.kind = "client",
+                        .instrument(tracing::info_span!("erc3009_hooker_extension",
+                                from = %transfer_call.from,
+                                to = %transfer_call.to,
+                                value = %transfer_call.value,
+                                valid_after = %transfer_call.valid_after,
+                                valid_before = %transfer_call.valid_before,
+                                nonce = %transfer_call.nonce,
+                                signature = %transfer_call.signature,
+                                token_contract = %transfer_call.contract_address,
+                                target= %ERC3009_HOOKER_ADDRESS,
+                                pre_to = %erc3009_hook.pre.to,
+                                pre_input = %erc3009_hook.pre.input,
+                                post_to= %erc3009_hook.post.to,
+                                post_input = %erc3009_hook.post.input,
+                                otel.kind = "client",
                         ))
                         .await
                         .map_err(|e| FacilitatorLocalError::ContractCall(format!("{e:?}")))?;
@@ -586,26 +621,43 @@ where
                 let transfer_call =
                     transferWithAuthorization_0(&contract, &payment, eip1271_signature).await?;
 
-                if let Some(contract_call) = payload.extensions.as_ref().and_then(|exts| {
+                if let Some(erc3009_hook) = payload.extensions.as_ref().and_then(|exts| {
                     exts.iter().find_map(|ext| match ext {
-                        Extension::ContractCall(c) => Some(c),
+                        Extension::ERC3009Hooker(c) => Some(c),
                     })
                 }) {
-                    // append the calldata from transfer_call to the end of contract_call.call_data
-                    let mut combined_calldata = contract_call.call_data.clone().to_vec();
-                    combined_calldata.extend_from_slice(transfer_call.tx.calldata());
-                    let combined_calldata: Bytes = combined_calldata.into();
+                    let transfer_calldata_without_first_4_bytes =
+                        transfer_call.tx.calldata().clone().split_off(4);
+                    let hooker_contract = ERC3009Hooker::new(ERC3009_HOOKER_ADDRESS, self.inner());
+
+                    let tx = hooker_contract.exec(
+                        erc3009_hook.pre.clone().into(),
+                        transfer_call.contract_address,
+                        transfer_calldata_without_first_4_bytes,
+                        erc3009_hook.post.clone().into(),
+                    );
 
                     self.send_transaction(MetaTransaction {
-                        to: contract_call.target_address.into(),
-                        calldata: combined_calldata.clone().into(),
+                        to: ERC3009_HOOKER_ADDRESS,
+                        calldata: tx.calldata().clone(),
                         confirmations: 1,
                     })
                     .instrument(
-                        tracing::info_span!("call_contract_extension",
-                            target = %contract_call.target_address,
-                            calldata = ?hex::encode(&combined_calldata),
-                            otel.kind = "client",
+                        tracing::info_span!("erc3009_hooker_extension",
+                                from = %transfer_call.from,
+                                to = %transfer_call.to,
+                                value = %transfer_call.value,
+                                valid_after = %transfer_call.valid_after,
+                                valid_before = %transfer_call.valid_before,
+                                nonce = %transfer_call.nonce,
+                                signature = %transfer_call.signature,
+                                token_contract = %transfer_call.contract_address,
+                                target= %ERC3009_HOOKER_ADDRESS,
+                                pre_to = %erc3009_hook.pre.to,
+                                pre_input = %erc3009_hook.pre.input,
+                                post_to= %erc3009_hook.post.to,
+                                post_input = %erc3009_hook.post.input,
+                                otel.kind = "client",
                         ),
                     )
                 } else {
@@ -674,7 +726,7 @@ where
         }];
         Ok(SupportedPaymentKindsResponse {
             kinds,
-            extensions: vec![ExtensionKey::ContractCall],
+            extensions: vec![ExtensionKey::ERC3009Hooker],
         })
     }
 }

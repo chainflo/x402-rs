@@ -1,0 +1,48 @@
+[
+  {
+    "type": "function",
+    "name": "exec",
+    "inputs": [
+      {
+        "name": "pre",
+        "type": "tuple",
+        "internalType": "struct ERC3009Hooker.Hook",
+        "components": [
+          { "name": "to", "type": "address", "internalType": "address" },
+          { "name": "input", "type": "bytes", "internalType": "bytes" }
+        ]
+      },
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "contract IERC3009"
+      },
+      {
+        "name": "transferWithAuthorization",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "post",
+        "type": "tuple",
+        "internalType": "struct ERC3009Hooker.Hook",
+        "components": [
+          { "name": "to", "type": "address", "internalType": "address" },
+          { "name": "input", "type": "bytes", "internalType": "bytes" }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "error",
+    "name": "PostHookError",
+    "inputs": [{ "name": "result", "type": "bytes", "internalType": "bytes" }]
+  },
+  {
+    "type": "error",
+    "name": "PreHookError",
+    "inputs": [{ "name": "result", "type": "bytes", "internalType": "bytes" }]
+  }
+]

@@ -8977,7 +8977,7 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "tracing",
- "x402-rs 0.9.1",
+ "x402-rs 0.9.1 (git+https://github.com/chainflo/x402-rs.git?branch=chainflo)",
 ]
 
 [[package]]

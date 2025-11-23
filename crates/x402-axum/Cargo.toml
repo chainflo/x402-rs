@@ -15,7 +15,7 @@ readme = "README.md"
 [dependencies]
 # x402-rs = { version = "0.9", default-features = false }
 # x402-rs = { path = "../../", default-features = false }
-x402-rs = { git = "https://github.com/chainflo/x402-rs.git", branch = "chainflo", features = ["telemetry"] }
+x402-rs = { git = "https://github.com/chainflo/x402-rs.git", branch = "feat/hooker", features = ["telemetry"] }
 url = { version = "2.5.4", features = ["serde"] }
 serde_json = { version = "1.0.140" }
 reqwest = { version = "0.12.15" }

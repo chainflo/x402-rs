@@ -9056,7 +9056,7 @@ dependencies = [
  "tower",
  "tracing",
  "url",
- "x402-rs 0.9.1 (git+https://github.com/chainflo/x402-rs.git?branch=chainflo)",
+ "x402-rs 0.9.1 (git+https://github.com/chainflo/x402-rs.git?branch=feat%2Fhooker)",
 ]
 
 [[package]]
@@ -9173,6 +9173,44 @@ dependencies = [
 name = "x402-rs"
 version = "0.9.1"
 source = "git+https://github.com/chainflo/x402-rs.git?branch=chainflo#85db3958a187a1dae0c2e2ab167645e39e8592fa"
+dependencies = [
+ "alloy",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "bincode",
+ "dashmap 6.1.0",
+ "dotenvy",
+ "once_cell",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry-stdout",
+ "opentelemetry_sdk",
+ "regex",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "solana-client",
+ "solana-commitment-config",
+ "solana-sdk",
+ "spl-token",
+ "spl-token-2022 9.0.0",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-util",
+ "tower-http",
+ "tracing",
+ "tracing-core",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "x402-rs"
+version = "0.9.1"
+source = "git+https://github.com/chainflo/x402-rs.git?branch=feat%2Fhooker#d9c1d9665ebffdee907a8f86f1231fc600030b65"
 dependencies = [
  "alloy",
  "async-trait",

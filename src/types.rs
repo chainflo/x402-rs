@@ -7,7 +7,7 @@
 //! This module supports ERC-3009 style authorization for tokens (EIP-712 typed signatures),
 //! and provides serialization logic compatible with external clients.
 
-use alloy::primitives::{Bytes, U256};
+use alloy::primitives::{Address, Bytes, U256};
 use alloy::{hex, sol};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as b64;
@@ -1430,8 +1430,8 @@ pub enum Extension {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ERC3009HookerExtension {
-    pub pre: Hook,
-    pub post: Hook,
+    pub pre: Option<Hook>,
+    pub post: Option<Hook>,
 }
 
 // A second enum with the *same* variants but as unit variants for the “keys-only” view.
@@ -1475,3 +1475,12 @@ sol!(
         bytes input;
     }
 );
+
+impl Default for Hook {
+    fn default() -> Self {
+        Self {
+            to: Address::ZERO,
+            input: Bytes::new(),
+        }
+    }
+}

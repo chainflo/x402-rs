@@ -90,6 +90,21 @@ impl From<Hook> for ERC3009Hooker::Hook {
     }
 }
 
+impl From<Option<Hook>> for ERC3009Hooker::Hook {
+    fn from(value: Option<Hook>) -> Self {
+        match value {
+            Some(hook) => Self {
+                to: hook.to,
+                input: hook.input,
+            },
+            None => Self {
+                to: Address::ZERO,
+                input: Bytes::new(),
+            },
+        }
+    }
+}
+
 /// Signature verifier for EIP-6492, EIP-1271, EOA, universally deployed on the supported EVM chains
 /// If absent on a target chain, verification will fail; you should deploy the validator there.
 const VALIDATOR_ADDRESS: alloy::primitives::Address =
@@ -492,10 +507,10 @@ where
                                 signature = %transfer_call.signature,
                                 token_contract = %transfer_call.contract_address,
                                 target= %ERC3009_HOOKER_ADDRESS,
-                                pre_to = %erc3009_hook.pre.to,
-                                pre_input = %erc3009_hook.pre.input,
-                                post_to= %erc3009_hook.post.to,
-                                post_input = %erc3009_hook.post.input,
+                                pre_to = %erc3009_hook.pre.as_ref().unwrap_or(&Hook::default()).to,
+                                pre_input = %erc3009_hook.pre.as_ref().unwrap_or(&Hook::default()).input,
+                                post_to= %erc3009_hook.post.as_ref().unwrap_or(&Hook::default()).to,
+                                post_input = %erc3009_hook.post.as_ref().unwrap_or(&Hook::default()).input,
                                 otel.kind = "client",
                         ))
                         .await
@@ -653,10 +668,10 @@ where
                                 signature = %transfer_call.signature,
                                 token_contract = %transfer_call.contract_address,
                                 target= %ERC3009_HOOKER_ADDRESS,
-                                pre_to = %erc3009_hook.pre.to,
-                                pre_input = %erc3009_hook.pre.input,
-                                post_to= %erc3009_hook.post.to,
-                                post_input = %erc3009_hook.post.input,
+                                pre_to = %erc3009_hook.pre.as_ref().unwrap_or(&Hook::default()).to,
+                                pre_input = %erc3009_hook.pre.as_ref().unwrap_or(&Hook::default()).input,
+                                post_to= %erc3009_hook.post.as_ref().unwrap_or(&Hook::default()).to,
+                                post_input = %erc3009_hook.post.as_ref().unwrap_or(&Hook::default()).input,
                                 otel.kind = "client",
                         ),
                     )

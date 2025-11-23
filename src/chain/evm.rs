@@ -19,7 +19,7 @@ use alloy::dyn_abi::SolType;
 use alloy::network::{
     Ethereum as AlloyEthereum, EthereumWallet, NetworkWallet, TransactionBuilder,
 };
-use alloy::primitives::{Address, Bytes, FixedBytes, U256, address};
+use alloy::primitives::{Address, Bytes, FixedBytes, Signature as EcdsaSignature, U256, address};
 use alloy::providers::ProviderBuilder;
 use alloy::providers::bindings::IMulticall3;
 use alloy::providers::fillers::NonceManager;
@@ -1199,7 +1199,18 @@ impl TryFrom<Vec<u8>> for StructuredSignature {
                 original: bytes.into(),
             }
         } else {
-            StructuredSignature::EIP1271(bytes.into())
+            // Canonicalize EOA/EIP-1271 signatures to low-s form. Some token
+            // contracts (e.g., USDC) enforce EIP-2 and reject high-s values.
+            if bytes.len() == 65 {
+                if let Ok(sig) = EcdsaSignature::from_raw(&bytes) {
+                    let normalized = sig.normalized_s();
+                    StructuredSignature::EIP1271(Bytes::from(normalized.as_bytes().to_vec()))
+                } else {
+                    StructuredSignature::EIP1271(bytes.into())
+                }
+            } else {
+                StructuredSignature::EIP1271(bytes.into())
+            }
         };
         Ok(signature)
     }

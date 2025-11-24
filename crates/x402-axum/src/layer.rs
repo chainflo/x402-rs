@@ -780,6 +780,8 @@ where
 
         match payment_header {
             None => {
+                #[cfg(feature = "telemetry")]
+                tracing::info!("No payment header found. Building 402 response from {} payment requirements", self.payment_requirements.len());
                 let requirements = self
                     .payment_requirements
                     .as_ref()
@@ -803,6 +805,8 @@ where
                         }
                     })
                     .collect::<Vec<_>>();
+                #[cfg(feature = "telemetry")]
+                tracing::info!("Built 402 response with {} requirements in accepts array", requirements.len());
                 Err(X402Error::payment_header_required(
                     requirements,
                     Some(extensions),
@@ -1176,12 +1180,22 @@ async fn gather_payment_requirements(
             resolver,
         } => {
             // Call the resolver function to compute dynamic requirements
+            #[cfg(feature = "telemetry")]
+            tracing::debug!("Calling requirements resolver with {} partial requirements", partial.len());
             match resolver
                 .resolve(req_headers, req_uri, base_url, partial)
                 .await
             {
-                Ok(list) => Ok(Arc::new(list)),
-                Err(err) => Err(err),
+                Ok(list) => {
+                    #[cfg(feature = "telemetry")]
+                    tracing::info!("Requirements resolver returned {} requirements", list.len());
+                    Ok(Arc::new(list))
+                }
+                Err(err) => {
+                    #[cfg(feature = "telemetry")]
+                    tracing::error!("Requirements resolver returned error: {:?}", err);
+                    Err(err)
+                }
             }
         }
     }

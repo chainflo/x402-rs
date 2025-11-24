@@ -485,14 +485,12 @@ where
                         Extension::ERC3009Hooker(c) => Some(c),
                     })
                 }) {
-                    let transfer_calldata_without_first_4_bytes =
-                        transfer_call.tx.calldata().clone().split_off(4);
                     let hooker_contract = ERC3009Hooker::new(ERC3009_HOOKER_ADDRESS, self.inner());
                     hooker_contract
                         .exec(
                             erc3009_hook.pre.clone().into(),
                             transfer_call.contract_address,
-                            transfer_calldata_without_first_4_bytes,
+                            transfer_call.tx.calldata().clone(),
                             erc3009_hook.post.clone().into(),
                         )
                         .call()
@@ -641,14 +639,12 @@ where
                         Extension::ERC3009Hooker(c) => Some(c),
                     })
                 }) {
-                    let transfer_calldata_without_first_4_bytes =
-                        transfer_call.tx.calldata().clone().split_off(4);
                     let hooker_contract = ERC3009Hooker::new(ERC3009_HOOKER_ADDRESS, self.inner());
 
                     let tx = hooker_contract.exec(
                         erc3009_hook.pre.clone().into(),
                         transfer_call.contract_address,
-                        transfer_calldata_without_first_4_bytes,
+                        transfer_call.tx.calldata().clone(),
                         erc3009_hook.post.clone().into(),
                     );
 

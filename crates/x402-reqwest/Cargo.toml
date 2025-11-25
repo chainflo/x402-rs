@@ -14,7 +14,7 @@ readme = "README.md"
 
 [dependencies]
 # x402-rs = { version = "0.9", default-features = false }
-x402-rs = { git = "https://github.com/chainflo/x402-rs.git", branch = "chainflo", features = ["telemetry"] }
+x402-rs = { git = "https://github.com/chainflo/x402-rs.git", branch = "chainflo", default-features = false}
 reqwest = { version = "0.12.20" }
 http = { version = "1.3.1" }
 reqwest-middleware = { version = "0.4.2" }

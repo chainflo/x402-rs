@@ -18,7 +18,7 @@ use std::time::SystemTimeError;
 use tracing::instrument;
 use x402_rs::network::{Network, USDCDeployment};
 use x402_rs::types::{
-    Base64Bytes, MixedAddressError, MoneyAmount, MoneyAmountParseError, PaymentPayload,
+    Base64Bytes, Extension, MixedAddressError, MoneyAmount, MoneyAmountParseError, PaymentPayload,
     PaymentRequiredResponse, PaymentRequirements, TokenAmount, TokenAsset, TokenDeployment,
 };
 
@@ -246,13 +246,14 @@ impl X402Payments {
     pub async fn make_payment_payload(
         &self,
         selected: PaymentRequirements,
+        extensions: Option<Vec<Extension>>,
     ) -> Result<PaymentPayload, X402PaymentsError> {
         let wallet = self.wallets.iter().find(|w| w.can_handle(&selected));
         match wallet {
             None => Err(X402PaymentsError::SigningError(
                 "No suitable wallet found".to_string(),
             )),
-            Some(wallet) => wallet.payment_payload(selected).await,
+            Some(wallet) => wallet.payment_payload(selected, extensions).await,
         }
     }
 
@@ -271,12 +272,13 @@ impl X402Payments {
     pub async fn build_payment_header(
         &self,
         accepts: &[PaymentRequirements],
+        extensions: Option<Vec<Extension>>,
     ) -> Result<HeaderValue, X402PaymentsError> {
         let selected = self.select_payment_requirements(accepts)?;
         #[cfg(feature = "telemetry")]
         tracing::debug!(?selected, "Selected payment requirement");
         self.assert_max_amount(&selected)?;
-        let payment_payload = self.make_payment_payload(selected).await?;
+        let payment_payload = self.make_payment_payload(selected, extensions).await?;
         Self::encode_payment_header(&payment_payload)
     }
 }
@@ -309,7 +311,10 @@ impl rqm::Middleware for X402Payments {
 
         let retry_req = async {
             let payment_header = self
-                .build_payment_header(&payment_required_response.accepts)
+                .build_payment_header(
+                    &payment_required_response.accepts,
+                    payment_required_response.extensions,
+                )
                 .await?;
             let mut req = retry_req.ok_or(X402PaymentsError::RequestNotCloneable)?;
             let headers = req.headers_mut();

@@ -63,6 +63,7 @@ impl SenderWallet for EvmSenderWallet {
     async fn payment_payload(
         &self,
         selected: PaymentRequirements,
+        extensions: Option<Vec<x402_rs::types::Extension>>,
     ) -> Result<PaymentPayload, X402PaymentsError> {
         let (name, version) = match selected.extra {
             None => (None, None),
@@ -120,17 +121,20 @@ impl SenderWallet for EvmSenderWallet {
             .sign_hash(&eip712_hash)
             .await
             .map_err(|e| X402PaymentsError::SigningError(format!("{e:?}")))?;
+        // Normalize to low-s form and re-encode to 65-byte v/r/s to satisfy EIP-2
+        // (USDC enforces this in transferWithAuthorization).
+        let signature_bytes = signature.normalized_s().as_bytes();
         #[cfg(feature = "telemetry")]
-        tracing::debug!(?signature, "Signature obtained");
+        tracing::debug!(?signature_bytes, "Signature obtained (low-s normalized)");
         let payment_payload = PaymentPayload {
             x402_version: x402_rs::types::X402Version::V1,
             scheme: Scheme::Exact,
             network,
             payload: ExactPaymentPayload::Evm(ExactEvmPayload {
-                signature: EvmSignature::from(signature.as_bytes()),
+                signature: EvmSignature::from(signature_bytes),
                 authorization,
             }),
-            extensions: None,
+            extensions,
         };
         Ok(payment_payload)
     }

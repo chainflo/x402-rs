@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use x402_rs::types::{PaymentPayload, PaymentRequirements};
+use x402_rs::types::{Extension, PaymentPayload, PaymentRequirements};
 
 use crate::X402PaymentsError;
 
@@ -12,6 +12,7 @@ pub trait SenderWallet: Send + Sync {
     async fn payment_payload(
         &self,
         selected: PaymentRequirements,
+        extensions: Option<Vec<Extension>>,
     ) -> Result<PaymentPayload, X402PaymentsError>;
 }
 
